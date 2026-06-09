@@ -1,0 +1,11 @@
+[package]
+name = "git-branch-manager"
+version = "0.1.0"
+edition = "2021"
+description = "A keyboard-driven TUI for browsing and bulk-deleting local git branches"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+git2 = "0.19"
+anyhow = "1"
