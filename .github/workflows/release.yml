@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*" # e.g. v0.1.0
+
+permissions:
+  contents: write # needed to create the GitHub Release and upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: git-branch-manager
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          # macOS universal: built from these two and merged with lipo below.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            extra_target: x86_64-apple-darwin
+            universal: true
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Add second macOS target
+        if: matrix.universal
+        run: rustup target add ${{ matrix.extra_target }}
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build second macOS arch
+        if: matrix.universal
+        run: cargo build --release --locked --target ${{ matrix.extra_target }}
+
+      # ---- Package -------------------------------------------------------
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          staging="${BIN_NAME}-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${staging}"
+
+          if [ "${{ matrix.universal }}" = "true" ]; then
+            # Merge the two arch binaries into one universal binary.
+            lipo -create -output "dist/${staging}/${BIN_NAME}" \
+              "target/${{ matrix.target }}/release/${BIN_NAME}" \
+              "target/${{ matrix.extra_target }}/release/${BIN_NAME}"
+            # Name the artifact for clarity: it's universal, not a single arch.
+            staging="${BIN_NAME}-${version}-universal-apple-darwin"
+            mv "dist/${BIN_NAME}-${version}-${{ matrix.target }}" "dist/${staging}"
+          else
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${staging}/"
+          fi
+
+          cp README.md LICENSE* "dist/${staging}/" 2>/dev/null || true
+          tar -C dist -czf "${staging}.tar.gz" "${staging}"
+          echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          $staging = "$env:BIN_NAME-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path "dist/$staging" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/$env:BIN_NAME.exe" "dist/$staging/"
+          if (Test-Path README.md) { Copy-Item README.md "dist/$staging/" }
+          Get-ChildItem -Filter "LICENSE*" | ForEach-Object { Copy-Item $_.FullName "dist/$staging/" }
+          Compress-Archive -Path "dist/$staging" -DestinationPath "$staging.zip"
+          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

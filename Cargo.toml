@@ -1,0 +1,17 @@
+[package]
+name = "git-branch-manager"
+version = "0.1.0"
+edition = "2021"
+description = "A keyboard-driven TUI for browsing and bulk-deleting local git branches"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/bruno-brant/git-branch-manager"
+authors = ["Bruno Brant"]
+keywords = ["git", "tui", "branch", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+git2 = "0.20"
+anyhow = "1"
