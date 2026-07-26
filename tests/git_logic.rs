@@ -175,6 +175,89 @@ fn worktree_branch_is_mapped_to_its_path() {
 }
 
 #[test]
+fn switch_branch_moves_head_and_updates_the_working_tree() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+
+    // A branch whose tip changes a.txt and adds b.txt.
+    let head = repo.head().unwrap().target().unwrap();
+    repo.branch("feature", &repo.find_commit(head).unwrap(), false)
+        .unwrap();
+    git::switch_branch(&repo, "feature").unwrap();
+    write_file(&tmp.path, "a.txt", "changed on feature");
+    write_file(&tmp.path, "b.txt", "only on feature");
+    commit_all(&repo, "feature work");
+
+    assert_eq!(repo.head().unwrap().shorthand(), Some("feature"));
+
+    // Back to main: the working tree must follow HEAD.
+    git::switch_branch(&repo, "main").unwrap();
+
+    assert_eq!(repo.head().unwrap().shorthand(), Some("main"));
+    assert_eq!(
+        std::fs::read_to_string(tmp.path.join("a.txt")).unwrap(),
+        "hello",
+        "a.txt should be restored to main's content"
+    );
+    assert!(
+        !tmp.path.join("b.txt").exists(),
+        "a file that only exists on feature should be gone"
+    );
+
+    let branches = git::list_branches(&repo).unwrap();
+    assert!(branches.iter().find(|b| b.name == "main").unwrap().is_head);
+    assert!(
+        !branches
+            .iter()
+            .find(|b| b.name == "feature")
+            .unwrap()
+            .is_head
+    );
+}
+
+#[test]
+fn switch_branch_refuses_to_clobber_uncommitted_changes() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+
+    // `feature` rewrites a.txt.
+    let head = repo.head().unwrap().target().unwrap();
+    repo.branch("feature", &repo.find_commit(head).unwrap(), false)
+        .unwrap();
+    git::switch_branch(&repo, "feature").unwrap();
+    write_file(&tmp.path, "a.txt", "changed on feature");
+    commit_all(&repo, "feature work");
+    git::switch_branch(&repo, "main").unwrap();
+
+    // Uncommitted edit to the same file the switch would have to overwrite.
+    write_file(&tmp.path, "a.txt", "work in progress");
+
+    let err = git::switch_branch(&repo, "feature").unwrap_err();
+    assert!(
+        err.to_string().contains("feature"),
+        "error should name the branch: {err}"
+    );
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("main"),
+        "a refused checkout must leave HEAD where it was"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path.join("a.txt")).unwrap(),
+        "work in progress",
+        "local work must survive a refused switch"
+    );
+}
+
+#[test]
+fn switch_to_a_missing_branch_errors() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+    assert!(git::switch_branch(&repo, "no-such-branch").is_err());
+    assert_eq!(repo.head().unwrap().shorthand(), Some("main"));
+}
+
+#[test]
 fn delete_branch_removes_it() {
     let tmp = TempDir::new();
     let repo = init_repo(&tmp.path);

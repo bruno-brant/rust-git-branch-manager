@@ -1,15 +1,19 @@
 # git-branch-manager
 
-A keyboard-driven terminal UI (TUI) for browsing and bulk-deleting local git
-branches. It understands the difference between a safe delete (`git branch -d`)
-and a force delete (`git branch -D`), asks for confirmation before anything
-destructive, and handles branches checked out in worktrees by removing the
-worktree first.
+A keyboard-driven terminal UI (TUI) for browsing, switching to, and bulk-deleting
+local git branches. It understands the difference between a safe delete
+(`git branch -d`) and a force delete (`git branch -D`), asks for confirmation
+before anything destructive, and handles branches checked out in worktrees by
+removing the worktree first.
 
 ## Features
 
 - Browse all local branches in a scrolling, paged list that never overflows the
   terminal — works the same with 5 branches or 500.
+- **Switch** to the branch under the cursor. The checkout is a safe one: it is
+  refused rather than overwriting uncommitted work.
+- Switching to a branch that lives in a **worktree** exits and prints that
+  worktree's path, so a shell wrapper can `cd` into it (see [Usage](#usage)).
 - Multi-select branches and delete them in a batch.
 - Merged branches are deleted immediately; **not-fully-merged** branches are
   collected into a single confirmation prompt before force-deletion.
@@ -25,6 +29,7 @@ worktree first.
 | `PgUp` / `PgDn` | Page up / down |
 | `Home` / `End` | Jump to first / last branch |
 | `Space` | Toggle selection |
+| `s` | Switch to the branch under the cursor |
 | `Enter` | Delete selected (or the branch under the cursor) |
 | `r` | Refresh the branch list |
 | `q` / `Esc` | Quit |
@@ -59,6 +64,27 @@ Run it from inside any git repository:
 ```sh
 git-branch-manager
 ```
+
+### Switching branches
+
+`s` checks out the branch under the cursor in the current working tree.
+
+Git allows a branch to be checked out in only one working tree, so if the branch
+is already held by a linked worktree, switching to it means going *there*
+instead. A process cannot change its parent shell's directory, so the tool exits
+and prints the worktree path on stdout. Wrap it in a shell function to make that
+a real `cd`:
+
+```sh
+gbm() {
+  local dir
+  dir=$(git-branch-manager) && [ -n "$dir" ] && cd "$dir"
+}
+```
+
+The UI itself is drawn on stderr, and stdout stays empty in every other case, so
+the wrapper still shows the TUI normally and stays put unless a worktree was
+picked.
 
 ## Development
 

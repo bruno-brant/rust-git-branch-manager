@@ -20,17 +20,32 @@ fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
     let result = run(&mut terminal, &mut app);
     restore_terminal(&mut terminal)?;
-    result
+    result?;
+
+    // Switching to a branch that lives in a linked worktree means changing
+    // directory, which a child process can't do for its parent shell. Print the
+    // path on stdout — the only thing this program ever writes there — so a
+    // wrapper can act on it:  cd "$(git-branch-manager)"
+    if let Some(path) = app.switch_to_worktree {
+        eprintln!(
+            "branch is checked out in a worktree; cd there with: cd \"$(git-branch-manager)\""
+        );
+        println!("{}", path.display());
+    }
+    Ok(())
 }
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
+/// The UI is drawn on **stderr**, not stdout: stdout is reserved for the one
+/// machine-readable line we may print on exit (the worktree path), so that
+/// `cd "$(git-branch-manager)"` captures the path and nothing else.
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stderr>>> {
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    Ok(Terminal::new(CrosstermBackend::new(stdout))?)
+    let mut stderr = io::stderr();
+    execute!(stderr, EnterAlternateScreen)?;
+    Ok(Terminal::new(CrosstermBackend::new(stderr))?)
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -38,7 +53,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
 }
 
 fn run<G: GitOperations>(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<CrosstermBackend<io::Stderr>>,
     app: &mut App<G>,
 ) -> Result<()> {
     loop {
@@ -82,6 +97,7 @@ fn handle_key<G: GitOperations>(app: &mut App<G>, code: KeyCode, mods: KeyModifi
             KeyCode::Home => app.move_up(usize::MAX),
             KeyCode::End => app.move_down(usize::MAX),
             KeyCode::Char(' ') => app.toggle_selection(),
+            KeyCode::Char('s') => app.switch_branch()?,
             KeyCode::Enter => app.request_delete()?,
             KeyCode::Char('r') => app.refresh()?,
             _ => {}

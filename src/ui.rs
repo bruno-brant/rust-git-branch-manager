@@ -106,9 +106,10 @@ fn draw_status<G: GitOperations>(frame: &mut Frame, area: Rect, app: &App<G>) {
     let status = Paragraph::new(app.status.clone()).style(Style::default().fg(Color::Magenta));
     frame.render_widget(status, rows[0]);
 
-    let help =
-        Paragraph::new("↑/↓ move  PgUp/PgDn page  Space select  Enter delete  r refresh  q quit")
-            .style(Style::default().add_modifier(Modifier::DIM));
+    let help = Paragraph::new(
+        "↑/↓ move  PgUp/PgDn page  Space select  s switch  Enter delete  r refresh  q quit",
+    )
+    .style(Style::default().add_modifier(Modifier::DIM));
     frame.render_widget(help, rows[1]);
 }
 

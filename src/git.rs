@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
-use git2::{BranchType, Repository};
+use git2::{build::CheckoutBuilder, BranchType, Repository};
 
 /// A single local branch and everything the UI needs to know about it.
 #[derive(Clone, Debug)]
@@ -39,6 +39,10 @@ pub trait GitOperations {
     fn delete_branch(&self, name: &str) -> Result<()>;
     /// Remove a branch's linked worktree, then delete the branch.
     fn remove_worktree_and_branch(&self, name: &str, worktree_path: &Path) -> Result<()>;
+    /// Check out a branch in *this* working tree. Refuses (via libgit2) when local
+    /// changes would be overwritten. Not valid for branches held by a worktree —
+    /// the caller routes those to the worktree-switch path instead.
+    fn switch_branch(&self, name: &str) -> Result<()>;
 }
 
 /// Production `GitOperations` backed by a real libgit2 `Repository`.
@@ -61,6 +65,9 @@ impl GitOperations for RealGit {
     }
     fn remove_worktree_and_branch(&self, name: &str, worktree_path: &Path) -> Result<()> {
         remove_worktree_and_branch(&self.repo, name, worktree_path)
+    }
+    fn switch_branch(&self, name: &str) -> Result<()> {
+        switch_branch(&self.repo, name)
     }
 }
 
@@ -145,6 +152,41 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     branch
         .delete()
         .with_context(|| format!("failed to delete branch '{name}'"))?;
+    Ok(())
+}
+
+/// Check out `name` in this working tree: update the files, then move HEAD.
+///
+/// The checkout is a *safe* one — libgit2 aborts rather than clobbering
+/// uncommitted work, which is what `git switch` does too. Files are written
+/// before HEAD moves so that a refused checkout leaves HEAD where it was.
+///
+/// A branch that is checked out in a linked worktree must not come through here:
+/// git allows only one working tree per branch, so the caller offers to jump to
+/// that worktree instead.
+pub fn switch_branch(repo: &Repository, name: &str) -> Result<()> {
+    if repo.is_bare() {
+        return Err(anyhow!("cannot switch branches in a bare repository"));
+    }
+
+    let branch = repo
+        .find_branch(name, BranchType::Local)
+        .with_context(|| format!("branch '{name}' not found"))?;
+    let reference = branch.get();
+    let refname = reference
+        .name()
+        .ok_or_else(|| anyhow!("branch '{name}' has a non-UTF8 ref name"))?
+        .to_string();
+    let target = reference
+        .peel(git2::ObjectType::Commit)
+        .with_context(|| format!("branch '{name}' does not point at a commit"))?;
+
+    repo.checkout_tree(&target, Some(CheckoutBuilder::new().safe()))
+        .with_context(|| {
+            format!("failed to check out '{name}' — commit or stash your local changes first")
+        })?;
+    repo.set_head(&refname)
+        .with_context(|| format!("checked out '{name}' but failed to move HEAD"))?;
     Ok(())
 }
 
