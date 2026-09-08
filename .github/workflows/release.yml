@@ -106,7 +106,11 @@ jobs:
       # binary itself by dpkg-shlibdeps.
       - name: Install cargo-deb
         if: matrix.deb
-        run: cargo install cargo-deb --locked
+        # Pinned to a major version: this workflow only ever runs on a tag, so a
+        # breaking change in cargo-deb's metadata schema would surface as a
+        # failed release rather than a failed PR. 3.x is what the packaging
+        # config in Cargo.toml is written against.
+        run: cargo install cargo-deb --version "^3" --locked
 
       - name: Build .deb package
         if: matrix.deb
