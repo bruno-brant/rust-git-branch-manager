@@ -14,23 +14,30 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # `platform` is what users see in asset names. The rust target triple
+          # is a build detail and reads badly in a download list
+          # ("x86_64-unknown-linux-gnu" — the "unknown" is the vendor field).
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
             archive: tar.gz
+            deb: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
             archive: zip
           # macOS universal: built from these two and merged with lipo below.
           - os: macos-latest
             target: aarch64-apple-darwin
             extra_target: x86_64-apple-darwin
             universal: true
+            platform: macos-universal
             archive: tar.gz
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME}"
-          staging="${BIN_NAME}-${version}-${{ matrix.target }}"
+          staging="${BIN_NAME}-${version}-${{ matrix.platform }}"
           mkdir -p "dist/${staging}"
 
           if [ "${{ matrix.universal }}" = "true" ]; then
@@ -71,9 +78,6 @@ jobs:
             lipo -create -output "dist/${staging}/${BIN_NAME}" \
               "target/${{ matrix.target }}/release/${BIN_NAME}" \
               "target/${{ matrix.extra_target }}/release/${BIN_NAME}"
-            # Name the artifact for clarity: it's universal, not a single arch.
-            staging="${BIN_NAME}-${version}-universal-apple-darwin"
-            mv "dist/${BIN_NAME}-${version}-${{ matrix.target }}" "dist/${staging}"
           else
             cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${staging}/"
           fi
@@ -87,7 +91,7 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME
-          $staging = "$env:BIN_NAME-$version-${{ matrix.target }}"
+          $staging = "$env:BIN_NAME-$version-${{ matrix.platform }}"
           New-Item -ItemType Directory -Path "dist/$staging" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/$env:BIN_NAME.exe" "dist/$staging/"
           if (Test-Path README.md) { Copy-Item README.md "dist/$staging/" }
@@ -95,11 +99,42 @@ jobs:
           Compress-Archive -Path "dist/$staging" -DestinationPath "$staging.zip"
           "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # ---- Debian package ------------------------------------------------
+      # Built from the binary compiled above (--no-build), so the .deb ships
+      # exactly what the tarball ships. Control fields come from
+      # [package.metadata.deb] in Cargo.toml; dependencies are resolved from the
+      # binary itself by dpkg-shlibdeps.
+      - name: Install cargo-deb
+        if: matrix.deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb package
+        if: matrix.deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Debian versions have no leading "v": tag v1.2.3 -> 1.2.3. Taking it
+          # from the tag keeps the .deb in step with the release even if
+          # Cargo.toml's version was not bumped.
+          version="${GITHUB_REF_NAME#v}"
+          asset="${BIN_NAME}_${version}_amd64.deb"
+          cargo deb --no-build --target "${{ matrix.target }}" \
+            --deb-version "${version}" --output "${asset}"
+          echo "DEB_ASSET=${asset}" >> "$GITHUB_ENV"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+      - name: Upload .deb artifact
+        if: matrix.deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DEB_ASSET }}
+          path: ${{ env.DEB_ASSET }}
           if-no-files-found: error
 
   release:

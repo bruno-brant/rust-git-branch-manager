@@ -15,3 +15,21 @@ ratatui = "0.29"
 crossterm = "0.28"
 git2 = { version = "0.20", default-features = false }
 anyhow = "1"
+
+# Debian packaging (cargo-deb). The release workflow builds the .deb from the
+# already-compiled release binary, so `assets` points at the cargo output path —
+# cargo-deb rewrites it to target/<triple>/release/ when --target is passed.
+[package.metadata.deb]
+maintainer = "Bruno 'Storm' Brant <1890900+bruno-brant@users.noreply.github.com>"
+copyright = "2026 Bruno Brant, MIT licensed"
+license-file = "LICENSE"
+section = "utils"
+priority = "optional"
+extended-description = """\
+A keyboard-driven terminal UI for browsing, switching to, and bulk-deleting \
+local git branches. Distinguishes a safe delete from a force delete, confirms \
+before anything destructive, and removes a branch's worktree when needed."""
+assets = [
+    ["target/release/git-branch-manager", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/git-branch-manager/README.md", "644"],
+]

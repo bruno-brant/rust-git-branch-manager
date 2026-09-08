@@ -40,8 +40,27 @@ In the confirmation prompt: `y` to proceed, `n` / `Esc` to cancel.
 
 ### From a release
 
-Download the archive for your platform from the
-[Releases](../../releases) page, extract it, and put the binary on your `PATH`.
+Download the asset for your platform from the [Releases](../../releases) page,
+extract it, and put the binary on your `PATH`. Assets are named by platform:
+
+| Platform | Asset |
+| --- | --- |
+| Linux (x86-64) | `git-branch-manager-<version>-linux-x86_64.tar.gz` |
+| Windows (x86-64) | `git-branch-manager-<version>-windows-x86_64.zip` |
+| macOS (Intel + Apple Silicon) | `git-branch-manager-<version>-macos-universal.tar.gz` |
+
+### Debian / Ubuntu
+
+Each release also ships a `.deb` for x86-64. Download it from the
+[Releases](../../releases) page and install with `apt`, which pulls in any
+missing system libraries:
+
+```sh
+sudo apt install ./git-branch-manager_<version>_amd64.deb
+```
+
+`sudo dpkg -i` works too, followed by `sudo apt-get -f install` if anything is
+missing. The package installs the binary to `/usr/bin/git-branch-manager`.
 
 ### From source
 
