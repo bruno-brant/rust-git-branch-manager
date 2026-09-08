@@ -1,6 +1,8 @@
 //! Application state and the logic that drives it: navigation, selection, and the
 //! partitioning of a delete request into safe / force / worktree buckets.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 use crate::git::{BranchInfo, GitOperations};
@@ -34,6 +36,10 @@ pub struct App<G: GitOperations> {
     /// Transient one-line message shown in the status bar (result of the last action).
     pub status: String,
     pub should_quit: bool,
+    /// Set when the user switched to a branch that lives in a linked worktree. A TUI
+    /// cannot change its parent shell's directory, so we hand the path back to the
+    /// caller (see `main.rs`) to print on exit for a `cd "$(git-branch-manager)"` wrapper.
+    pub switch_to_worktree: Option<PathBuf>,
 }
 
 impl<G: GitOperations> App<G> {
@@ -49,6 +55,7 @@ impl<G: GitOperations> App<G> {
             mode: Mode::Browsing,
             status: String::new(),
             should_quit: false,
+            switch_to_worktree: None,
         })
     }
 
@@ -125,6 +132,45 @@ impl<G: GitOperations> App<G> {
             Some(b) if !b.is_blocked() => vec![self.cursor],
             _ => Vec::new(),
         }
+    }
+
+    // --- Switch flow ------------------------------------------------------
+
+    /// Triggered by `s`. Switches to the branch under the cursor — selection is
+    /// ignored, since only one branch can be checked out at a time.
+    ///
+    /// Three cases:
+    /// - it is already HEAD → nothing to do;
+    /// - it is checked out in a linked worktree → git forbids a second checkout, so
+    ///   we record the worktree path and quit, letting the shell wrapper `cd` there;
+    /// - otherwise → check it out here, then refresh so HEAD and merged-status are current.
+    pub fn switch_branch(&mut self) -> Result<()> {
+        let Some(b) = self.branches.get(self.cursor) else {
+            self.status = "no branch to switch to".into();
+            return Ok(());
+        };
+
+        if b.is_head {
+            self.status = format!("already on '{}'", b.name);
+            return Ok(());
+        }
+
+        if let Some(path) = b.worktree.clone() {
+            self.status = format!("'{}' is checked out in {}", b.name, path.display());
+            self.switch_to_worktree = Some(path);
+            self.should_quit = true;
+            return Ok(());
+        }
+
+        let name = b.name.clone();
+        match self.git.switch_branch(&name) {
+            Ok(()) => {
+                self.refresh()?;
+                self.status = format!("switched to '{name}'");
+            }
+            Err(e) => self.status = format!("could not switch to '{name}': {e}"),
+        }
+        Ok(())
     }
 
     // --- Delete flow ------------------------------------------------------
@@ -248,6 +294,7 @@ mod tests {
         branches: RefCell<Vec<BranchInfo>>,
         deleted: RefCell<Vec<String>>,
         worktrees_removed: RefCell<Vec<String>>,
+        switched: RefCell<Vec<String>>,
         fail_on: Vec<String>,
     }
 
@@ -257,6 +304,7 @@ mod tests {
                 branches: RefCell::new(branches),
                 deleted: RefCell::new(Vec::new()),
                 worktrees_removed: RefCell::new(Vec::new()),
+                switched: RefCell::new(Vec::new()),
                 fail_on: Vec::new(),
             }
         }
@@ -268,6 +316,13 @@ mod tests {
 
         fn remove_branch(&self, name: &str) {
             self.branches.borrow_mut().retain(|b| b.name != name);
+        }
+
+        /// Move the HEAD flag onto `name`, as a real checkout would.
+        fn move_head(&self, name: &str) {
+            for b in self.branches.borrow_mut().iter_mut() {
+                b.is_head = b.name == name;
+            }
         }
     }
 
@@ -290,6 +345,14 @@ mod tests {
             self.worktrees_removed.borrow_mut().push(name.to_string());
             self.deleted.borrow_mut().push(name.to_string());
             self.remove_branch(name);
+            Ok(())
+        }
+        fn switch_branch(&self, name: &str) -> Result<()> {
+            if self.fail_on.iter().any(|n| n == name) {
+                return Err(anyhow!("simulated failure"));
+            }
+            self.switched.borrow_mut().push(name.to_string());
+            self.move_head(name);
             Ok(())
         }
     }
@@ -407,6 +470,75 @@ mod tests {
         app.toggle_selection();
         assert!(!app.selected[0], "HEAD must not become selected");
         assert!(app.status.contains("current branch"));
+    }
+
+    // --- Switching --------------------------------------------------------
+
+    #[test]
+    fn switch_checks_out_the_branch_under_the_cursor() {
+        let mut app = app_with(vec![head("main"), branch("feature")]);
+        app.cursor = 1;
+        app.switch_branch().unwrap();
+        assert_eq!(*app.git.switched.borrow(), vec!["feature"]);
+        assert!(app.status.contains("switched to 'feature'"));
+        // refresh ran: HEAD moved onto the branch we switched to.
+        assert!(app.branches[1].is_head);
+        assert!(!app.branches[0].is_head);
+        assert!(app.switch_to_worktree.is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn switch_ignores_selection_and_uses_the_cursor() {
+        let mut app = app_with(vec![head("main"), branch("a"), branch("b")]);
+        app.selected = vec![false, true, false];
+        app.cursor = 2;
+        app.switch_branch().unwrap();
+        assert_eq!(*app.git.switched.borrow(), vec!["b"]);
+    }
+
+    #[test]
+    fn switch_to_current_branch_is_a_no_op() {
+        let mut app = app_with(vec![head("main"), branch("a")]);
+        app.cursor = 0;
+        app.switch_branch().unwrap();
+        assert!(app.git.switched.borrow().is_empty());
+        assert!(app.status.contains("already on 'main'"));
+    }
+
+    #[test]
+    fn switch_to_worktree_branch_hands_back_the_path_and_quits() {
+        let mut app = app_with(vec![head("main"), worktree("wt", "/tmp/wt")]);
+        app.cursor = 1;
+        app.switch_branch().unwrap();
+        // No checkout attempted here — git allows one working tree per branch.
+        assert!(app.git.switched.borrow().is_empty());
+        assert_eq!(app.switch_to_worktree, Some(PathBuf::from("/tmp/wt")));
+        assert!(app.should_quit);
+        assert!(app.status.contains("/tmp/wt"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn switch_on_empty_list_is_safe() {
+        let mut app = app_with(vec![]);
+        app.switch_branch().unwrap();
+        assert!(app.git.switched.borrow().is_empty());
+        assert!(app.status.contains("no branch"));
+    }
+
+    #[test]
+    fn failed_switch_is_reported_and_leaves_head_alone() {
+        let git = MockGit::new(vec![head("main"), branch("dirty")]).failing_on(&["dirty"]);
+        let mut app = App::new(git).unwrap();
+        app.cursor = 1;
+        app.switch_branch().unwrap();
+        assert!(app.git.switched.borrow().is_empty());
+        assert!(
+            app.status.contains("could not switch to 'dirty'"),
+            "status: {}",
+            app.status
+        );
+        assert!(app.branches[0].is_head, "HEAD must not move on failure");
     }
 
     // --- Delete partitioning ---------------------------------------------
