@@ -40,8 +40,31 @@ In the confirmation prompt: `y` to proceed, `n` / `Esc` to cancel.
 
 ### From a release
 
-Download the archive for your platform from the
-[Releases](../../releases) page, extract it, and put the binary on your `PATH`.
+Download the asset for your platform from the [Releases](../../releases) page,
+extract it, and put the binary on your `PATH`. Assets are named by platform:
+
+| Platform | Asset | Requires |
+| --- | --- | --- |
+| Linux (x86-64) | `git-branch-manager-<version>-linux-x86_64.tar.gz` | glibc 2.34+ |
+| Linux (x86-64, static) | `git-branch-manager-<version>-linux-x86_64-static.tar.gz` | nothing |
+| Windows (x86-64) | `git-branch-manager-<version>-windows-x86_64.zip` | — |
+| macOS (Intel + Apple Silicon) | `git-branch-manager-<version>-macos-universal.tar.gz` | — |
+
+### Which Linux build?
+
+Both contain the same program; they differ only in how they link the C library.
+
+- **`linux-x86_64`** is dynamically linked against glibc. glibc is backward
+  compatible but not forward compatible, so a binary runs on the glibc it was
+  built against and anything newer — never on anything older, where it fails at
+  startup with `version 'GLIBC_x.yz' not found`. This one is built on Ubuntu
+  22.04 to keep that floor low: it needs **glibc 2.34 or newer**, which covers
+  Debian 12+, Ubuntu 22.04+, and RHEL 9+.
+- **`linux-x86_64-static`** is statically linked against musl. It has no
+  external dependencies at all — one file, runs on any x86-64 Linux regardless
+  of age or distribution. Slightly larger, and that's the only cost.
+
+If you don't want to think about it, take the static one.
 
 ### From source
 

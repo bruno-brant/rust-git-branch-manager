@@ -14,23 +14,44 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # `platform` is what users see in asset names. The rust target triple
+          # is a build detail and reads badly in a download list
+          # ("x86_64-unknown-linux-gnu" — the "unknown" is the vendor field).
+          #
+          # Pinned to 22.04 (glibc 2.35) on purpose, NOT ubuntu-latest: glibc is
+          # backward but not forward compatible, so the oldest glibc this binary
+          # runs on is the one it was built against. Building here puts the floor
+          # at GLIBC_2.34 (Debian 12+, Ubuntu 22.04+, RHEL 9+) instead of letting
+          # it drift upward every time the "latest" image rolls forward.
+          # If this image is ever retired, move to the oldest supported LTS
+          # rather than to ubuntu-latest.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
             archive: tar.gz
+          # Statically linked against musl: one file, no libc dependency at all,
+          # so it runs on any x86-64 Linux regardless of how old its glibc is.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64-static
+            archive: tar.gz
+            musl: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
             archive: zip
           # macOS universal: built from these two and merged with lipo below.
           - os: macos-latest
             target: aarch64-apple-darwin
             extra_target: x86_64-apple-darwin
             universal: true
+            platform: macos-universal
             archive: tar.gz
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +64,12 @@ jobs:
       - name: Add second macOS target
         if: matrix.universal
         run: rustup target add ${{ matrix.extra_target }}
+
+      # libgit2 is vendored and compiled from C, so the musl target needs a musl
+      # C toolchain; the cc crate picks up musl-gcc automatically from here.
+      - name: Install musl toolchain
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -63,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME}"
-          staging="${BIN_NAME}-${version}-${{ matrix.target }}"
+          staging="${BIN_NAME}-${version}-${{ matrix.platform }}"
           mkdir -p "dist/${staging}"
 
           if [ "${{ matrix.universal }}" = "true" ]; then
@@ -71,9 +98,6 @@ jobs:
             lipo -create -output "dist/${staging}/${BIN_NAME}" \
               "target/${{ matrix.target }}/release/${BIN_NAME}" \
               "target/${{ matrix.extra_target }}/release/${BIN_NAME}"
-            # Name the artifact for clarity: it's universal, not a single arch.
-            staging="${BIN_NAME}-${version}-universal-apple-darwin"
-            mv "dist/${BIN_NAME}-${version}-${{ matrix.target }}" "dist/${staging}"
           else
             cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${staging}/"
           fi
@@ -87,7 +111,7 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME
-          $staging = "$env:BIN_NAME-$version-${{ matrix.target }}"
+          $staging = "$env:BIN_NAME-$version-${{ matrix.platform }}"
           New-Item -ItemType Directory -Path "dist/$staging" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/$env:BIN_NAME.exe" "dist/$staging/"
           if (Test-Path README.md) { Copy-Item README.md "dist/$staging/" }
@@ -119,3 +143,15 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # Prepended to the auto-generated notes. Two Linux assets need a word
+          # of explanation, and this is where people actually look.
+          body: |
+            ### Which Linux download?
+
+            | Asset | Requires |
+            | --- | --- |
+            | `…-linux-x86_64.tar.gz` | **glibc 2.34+** — Debian 12+, Ubuntu 22.04+, RHEL 9+ |
+            | `…-linux-x86_64-static.tar.gz` | **nothing** — statically linked, runs on any x86-64 Linux |
+
+            Take the `-static` one if the other reports
+            `version 'GLIBC_x.yz' not found`.
