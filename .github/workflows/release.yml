@@ -23,7 +23,15 @@ jobs:
           # `platform` is what users see in asset names. The rust target triple
           # is a build detail and reads badly in a download list
           # ("x86_64-unknown-linux-gnu" — the "unknown" is the vendor field).
-          - os: ubuntu-latest
+          #
+          # Pinned to 22.04 (glibc 2.35) on purpose, NOT ubuntu-latest: glibc is
+          # backward but not forward compatible, so the oldest glibc this binary
+          # runs on is the one it was built against. Building here puts the floor
+          # at GLIBC_2.34 (Debian 12+, Ubuntu 22.04+, RHEL 9+) instead of letting
+          # it drift upward every time the "latest" image rolls forward.
+          # If this image is ever retired, move to the oldest supported LTS
+          # rather than to ubuntu-latest.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             archive: tar.gz
@@ -142,7 +150,7 @@ jobs:
 
             | Asset | Requires |
             | --- | --- |
-            | `…-linux-x86_64.tar.gz` | a reasonably current **glibc** (built on Ubuntu) |
+            | `…-linux-x86_64.tar.gz` | **glibc 2.34+** — Debian 12+, Ubuntu 22.04+, RHEL 9+ |
             | `…-linux-x86_64-static.tar.gz` | **nothing** — statically linked, runs on any x86-64 Linux |
 
             Take the `-static` one if the other reports
