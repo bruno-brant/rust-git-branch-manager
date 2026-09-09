@@ -27,7 +27,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             archive: tar.gz
-            deb: true
+          # Statically linked against musl: one file, no libc dependency at all,
+          # so it runs on any x86-64 Linux regardless of how old its glibc is.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64-static
+            archive: tar.gz
+            musl: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x86_64
@@ -50,6 +56,12 @@ jobs:
       - name: Add second macOS target
         if: matrix.universal
         run: rustup target add ${{ matrix.extra_target }}
+
+      # libgit2 is vendored and compiled from C, so the musl target needs a musl
+      # C toolchain; the cc crate picks up musl-gcc automatically from here.
+      - name: Install musl toolchain
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -99,46 +111,11 @@ jobs:
           Compress-Archive -Path "dist/$staging" -DestinationPath "$staging.zip"
           "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # ---- Debian package ------------------------------------------------
-      # Built from the binary compiled above (--no-build), so the .deb ships
-      # exactly what the tarball ships. Control fields come from
-      # [package.metadata.deb] in Cargo.toml; dependencies are resolved from the
-      # binary itself by dpkg-shlibdeps.
-      - name: Install cargo-deb
-        if: matrix.deb
-        # Pinned to a major version: this workflow only ever runs on a tag, so a
-        # breaking change in cargo-deb's metadata schema would surface as a
-        # failed release rather than a failed PR. 3.x is what the packaging
-        # config in Cargo.toml is written against.
-        run: cargo install cargo-deb --version "^3" --locked
-
-      - name: Build .deb package
-        if: matrix.deb
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Debian versions have no leading "v": tag v1.2.3 -> 1.2.3. Taking it
-          # from the tag keeps the .deb in step with the release even if
-          # Cargo.toml's version was not bumped.
-          version="${GITHUB_REF_NAME#v}"
-          asset="${BIN_NAME}_${version}_amd64.deb"
-          cargo deb --no-build --target "${{ matrix.target }}" \
-            --deb-version "${version}" --output "${asset}"
-          echo "DEB_ASSET=${asset}" >> "$GITHUB_ENV"
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
-          if-no-files-found: error
-
-      - name: Upload .deb artifact
-        if: matrix.deb
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.DEB_ASSET }}
-          path: ${{ env.DEB_ASSET }}
           if-no-files-found: error
 
   release:
@@ -158,3 +135,15 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # Prepended to the auto-generated notes. Two Linux assets need a word
+          # of explanation, and this is where people actually look.
+          body: |
+            ### Which Linux download?
+
+            | Asset | Requires |
+            | --- | --- |
+            | `…-linux-x86_64.tar.gz` | a reasonably current **glibc** (built on Ubuntu) |
+            | `…-linux-x86_64-static.tar.gz` | **nothing** — statically linked, runs on any x86-64 Linux |
+
+            Take the `-static` one if the other reports
+            `version 'GLIBC_x.yz' not found`.
