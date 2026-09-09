@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - "v*" # e.g. v0.1.0
+  # Manual runs build every platform without publishing anything, so changes to
+  # this workflow can be verified before a tag depends on them. Artifacts are
+  # attached to the run itself; the publish job below is skipped.
+  workflow_dispatch:
 
 permissions:
   contents: write # needed to create the GitHub Release and upload assets
@@ -89,6 +93,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The tag for a release run ("v0.1.2"); the branch name for a manual
+          # one ("main"), which keeps test artifacts visibly distinct from
+          # release assets.
           version="${GITHUB_REF_NAME}"
           staging="${BIN_NAME}-${version}-${{ matrix.platform }}"
           mkdir -p "dist/${staging}"
@@ -129,6 +136,10 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
+    # Publish only for a real tag push. Testing both halves of the condition
+    # matters: workflow_dispatch can be run against a tag as well as a branch,
+    # and checking the ref alone would let a manual run publish a release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
