@@ -122,3 +122,57 @@ The application logic in [`src/app.rs`](src/app.rs) is decoupled from git via th
 `GitOperations` trait, so it is unit-tested against an in-memory mock. The git
 layer in [`src/git.rs`](src/git.rs) is covered by integration tests that build
 throwaway repositories with `git2`.
+
+### Commit messages
+
+Commit subjects start with a [gitmoji](https://gitmoji.dev). The emoji is not
+decoration — [`cliff.toml`](cliff.toml) maps it to a
+[conventional commit](https://www.conventionalcommits.org) type, which decides
+both the changelog section a commit lands in and how the version is bumped:
+
+| Emoji | Means | Version effect |
+| --- | --- | --- |
+| 💥 | Breaking change | major (minor while 0.x) |
+| ✨ | New feature | minor |
+| 🐛 🚑️ 🩹 🔒️ | Bug fix | patch |
+| ⚡️ | Performance | patch |
+| 📝 ♻️ ✅ 📦 ⬆️ ⬇️ 📌 👷 💚 | Docs, refactor, tests, build, deps, CI | patch |
+
+The `:shortcode:` spelling (`:sparkles:`) works too. See `cliff.toml` for the
+full mapping; anything unrecognised is left out of the changelog.
+
+### Releasing
+
+Releases are cut by merging a pull request, not by tagging by hand:
+
+1. Every push to `main` runs [`release-plz.yml`](.github/workflows/release-plz.yml),
+   which opens or updates a **release PR** bumping the version in `Cargo.toml`
+   and rewriting `CHANGELOG.md` from the commits since the last tag.
+2. Review that PR. The proposed version comes from the commit history — edit it
+   in the PR if you disagree.
+3. Merge it. The next run of the same workflow pushes the `vX.Y.Z` tag, which
+   triggers [`release.yml`](.github/workflows/release.yml) to build every
+   platform and publish the GitHub Release with the binaries attached.
+
+The version is derived from the raw commit subjects, so it is worth knowing what
+each emoji does. Measured behaviour:
+
+| Commit | While `0.x` | From `1.0` on |
+| --- | --- | --- |
+| `💥` | `0.1.1` → `0.2.0` | `1.0.0` → `2.0.0` |
+| `✨` | `0.1.1` → `0.2.0` | `1.0.0` → `1.1.0` |
+| anything else | `0.1.1` → `0.1.2` | `1.0.0` → `1.0.1` |
+
+Below `1.0`, release-plz will not promote the crate to `1.0.0` on its own — that
+stays a deliberate decision, made by editing the version in the release PR.
+
+This needs a `RELEASE_PLZ_TOKEN` repository secret: a fine-grained personal
+access token scoped to this repository with **Contents: read & write** and
+**Pull requests: read & write**. It cannot be the default `GITHUB_TOKEN` —
+GitHub does not start workflow runs for events raised by that token, so the tag
+would never trigger the release build and the release would be published with
+no binaries.
+
+Version numbers follow semver, where the "public API" of a binary is what users
+and their scripts depend on: the keybindings, and the stdout contract that makes
+`cd "$(git-branch-manager)"` work. Changing either is a breaking change.
