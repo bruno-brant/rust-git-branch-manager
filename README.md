@@ -166,6 +166,23 @@ each emoji does. Measured behaviour:
 Below `1.0`, release-plz will not promote the crate to `1.0.0` on its own — that
 stays a deliberate decision, made by editing the version in the release PR.
 
+#### Testing the build without releasing
+
+`release.yml` can be run by hand — **Actions → Release → Run workflow** — which
+builds every platform and attaches the archives to that run, publishing nothing.
+The publish job is skipped for anything but a tag push. Use it after changing
+the release workflow, since normal CI never exercises it; the archives are named
+after the branch (`git-branch-manager-main-linux-x86_64.tar.gz`) so they cannot
+be mistaken for release assets.
+
+To confirm the glibc floor on the Linux build, download that run's
+`linux-x86_64` archive and check the highest version it demands:
+
+```sh
+objdump -T git-branch-manager | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1
+# GLIBC_2.34
+```
+
 This needs a `RELEASE_PLZ_TOKEN` repository secret: a fine-grained personal
 access token scoped to this repository with **Contents: read & write** and
 **Pull requests: read & write**. It cannot be the default `GITHUB_TOKEN` —
