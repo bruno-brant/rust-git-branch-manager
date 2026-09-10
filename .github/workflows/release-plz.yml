@@ -37,7 +37,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz release
-        uses: release-plz/action@v0
+        # v0.5 is the floating minor tag, and the shortest reference that
+        # resolves: this action publishes v0.5.x tags and has no v0 tag, so
+        # "@v0" fails the run outright with "unable to find version".
+        uses: release-plz/action@v0.5
         with:
           command: release
         env:
@@ -68,7 +71,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz release-pr
-        uses: release-plz/action@v0
+        uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
