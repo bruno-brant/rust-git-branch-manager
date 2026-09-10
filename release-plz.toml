@@ -1,0 +1,57 @@
+# release-plz: opens a PR that bumps the version and updates CHANGELOG.md, then
+# creates the git tag when that PR is merged. The tag is what triggers
+# .github/workflows/release.yml, which builds the binaries and publishes the
+# GitHub Release.
+#
+# Division of labour, so nothing owns the same thing twice:
+#   release-plz  -> version number, CHANGELOG.md, git tag
+#   release.yml  -> GitHub Release object, release notes, binary assets
+
+[workspace]
+# A binary crate: there is nothing to publish to crates.io. Left enabled, the
+# release job would fail for want of a registry token.
+publish = false
+
+# The crate is not on crates.io, so there is no registry to ask "what was the
+# last released version?". Without this, release-plz finds no published package,
+# proposes no bump, and the release PR never appears. Git tags are the source of
+# truth instead.
+git_only = true
+
+# Our gitmoji rules for the changelog. Without this, release-plz uses its
+# built-in "keep a changelog" config, which files every commit under "Other" and
+# leaves the raw emoji in the text.
+changelog_config = "cliff.toml"
+
+# release.yml already creates the GitHub Release, with the platform table and
+# the binaries attached. release-plz only needs to push the tag that starts it.
+git_release_enable = false
+git_tag_enable = true
+
+# Release when the release PR is merged, not on every push to main.
+release_always = false
+
+# cargo-semver-checks inspects a library's public Rust API. This crate has none.
+semver_check = false
+
+changelog_update = true
+
+# --- Version bumping ---------------------------------------------------------
+#
+# The gitmoji rewriting in cliff.toml only feeds the *changelog*: release-plz
+# reads the raw commit subject when deciding the bump. Verified by experiment —
+# without these regexes a "💥 …" commit bumps the patch version, which would
+# release a breaking change as a patch, silently.
+#
+# 💥 appears in both regexes on purpose, and it is not redundant:
+#   - Below 1.0, release-plz suppresses major bumps entirely (0.x -> 1.0 is a
+#     human decision, not something a commit message should trigger), so only
+#     the minor entry fires: 0.1.1 -> 0.2.0, which is the semver-0.x meaning of
+#     a breaking change.
+#   - At 1.0 and above, the major entry takes precedence: 1.0.0 -> 2.0.0.
+# So this needs no edit when the project reaches 1.0.
+#
+# ✨ is the only other emoji that moves the minor version. Everything else —
+# fixes, docs, deps, CI, refactors — is a patch.
+custom_major_increment_regex = "💥|:boom:"
+custom_minor_increment_regex = "💥|:boom:|✨|:sparkles:"

@@ -1,0 +1,123 @@
+# git-cliff configuration — changelog generation and, through it, the version
+# bump release-plz proposes.
+#
+# This repository writes commit subjects in gitmoji ("✨ Add branch switching"),
+# not Conventional Commits. Rather than change that, `commit_preprocessors`
+# rewrites the leading emoji into the conventional type it stands for
+# ("✨ Add …" -> "feat: Add …") before anything is parsed. Everything
+# downstream — grouping here, and the semver bump release-plz derives — then
+# sees an ordinary conventional commit.
+#
+# Both the emoji and its :shortcode: spelling are accepted, so `git commit -m`
+# works either way.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented here.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}]\
+{% if previous.version %} - {{ timestamp | date(format="%Y-%m-%d") }}{% endif %}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}\n
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+# Keep non-conventional commits out of the changelog rather than dumping them
+# into a catch-all section; the preprocessors below are what make our commits
+# conventional in the first place.
+filter_unconventional = true
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9]*"
+topo_order = false
+sort_commits = "oldest"
+
+# gitmoji -> conventional type. Order matters: the first match wins, so the
+# breaking marker is listed first.
+commit_preprocessors = [
+  # Breaking change. `feat!:` is what makes release-plz bump the major version
+  # (or the minor, while the crate is still 0.x).
+  { pattern = '^(💥|:boom:)\s*', replace = "feat!: " },
+
+  # Features
+  { pattern = '^(✨|:sparkles:)\s*', replace = "feat: " },
+  { pattern = '^(🎉|:tada:)\s*', replace = "feat: " },
+  { pattern = '^(💄|:lipstick:)\s*', replace = "feat: " },
+  { pattern = '^(♿️?|:wheelchair:)\s*', replace = "feat: " },
+
+  # Fixes
+  { pattern = '^(🐛|:bug:)\s*', replace = "fix: " },
+  { pattern = '^(🚑️?|:ambulance:)\s*', replace = "fix: " },
+  { pattern = '^(🩹|:adhesive_bandage:)\s*', replace = "fix: " },
+  { pattern = '^(🔒️?|:lock:)\s*', replace = "fix: " },
+  { pattern = '^(🚨|:rotating_light:)\s*', replace = "fix: " },
+
+  # Performance
+  { pattern = '^(⚡️?|:zap:)\s*', replace = "perf: " },
+
+  # Documentation
+  { pattern = '^(📝|:memo:)\s*', replace = "docs: " },
+  { pattern = '^(📄|:page_facing_up:)\s*', replace = "docs: " },
+  { pattern = '^(✏️?|:pencil2:)\s*', replace = "docs: " },
+
+  # Refactoring / cleanup
+  { pattern = '^(♻️?|:recycle:)\s*', replace = "refactor: " },
+  { pattern = '^(🎨|:art:)\s*', replace = "refactor: " },
+  { pattern = '^(🔥|:fire:)\s*', replace = "refactor: " },
+  { pattern = '^(🗑️?|:wastebasket:)\s*', replace = "refactor: " },
+
+  # Tests
+  { pattern = '^(✅|:white_check_mark:)\s*', replace = "test: " },
+  { pattern = '^(🧪|:test_tube:)\s*', replace = "test: " },
+
+  # Build, packaging and dependencies
+  { pattern = '^(📦️?|:package:)\s*', replace = "build: " },
+  { pattern = '^(⬆️?|:arrow_up:)\s*', replace = "build(deps): " },
+  { pattern = '^(⬇️?|:arrow_down:)\s*', replace = "build(deps): " },
+  { pattern = '^(📌|:pushpin:)\s*', replace = "build(deps): " },
+  { pattern = '^(➕|:heavy_plus_sign:)\s*', replace = "build(deps): " },
+  { pattern = '^(➖|:heavy_minus_sign:)\s*', replace = "build(deps): " },
+
+  # CI
+  { pattern = '^(👷|:construction_worker:)\s*', replace = "ci: " },
+  { pattern = '^(💚|:green_heart:)\s*', replace = "ci: " },
+
+  # Chores — including the release commits release-plz makes itself
+  { pattern = '^(🔧|:wrench:)\s*', replace = "chore: " },
+  { pattern = '^(🚀|:rocket:)\s*', replace = "chore: " },
+  { pattern = '^(🔖|:bookmark:)\s*', replace = "chore(release): " },
+  { pattern = '^(⏪️?|:rewind:)\s*', replace = "revert: " },
+]
+
+# Grouping for the rendered changelog. Anything not matched here is skipped.
+commit_parsers = [
+  { message = "^feat", group = "✨ Features" },
+  { message = "^fix", group = "🐛 Bug fixes" },
+  { message = "^perf", group = "⚡ Performance" },
+  { message = "^docs", group = "📝 Documentation" },
+  { message = "^refactor", group = "♻️ Refactoring" },
+  { message = "^test", group = "✅ Tests" },
+  { message = "^build\\(deps\\)", group = "📌 Dependencies" },
+  { message = "^build", group = "📦 Build & packaging" },
+  { message = "^ci", group = "👷 CI" },
+  { message = "^revert", group = "⏪ Reverts" },
+  # Noise: release bookkeeping and merge commits never belong in a changelog.
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^Merge (branch|pull request)", skip = true },
+  { message = "^chore", skip = true },
+]

@@ -1,0 +1,75 @@
+name: Release-plz
+
+# Runs on every push to main, in two halves:
+#
+#   release-pr  opens or updates a "release" PR that bumps the version in
+#               Cargo.toml and rewrites CHANGELOG.md from the commits since the
+#               last tag. Merging that PR is the act of cutting a release.
+#   release     runs after that PR lands and pushes the vX.Y.Z tag, which
+#               triggers release.yml to build and publish the binaries.
+#
+# Both jobs run on every push; each is a no-op when there is nothing to do.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Must come first: tag the release that just landed before opening the PR for
+  # the next one.
+  release:
+    name: Tag release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release
+        uses: release-plz/action@v0
+        with:
+          command: release
+        env:
+          # Must be a personal access token, not the default GITHUB_TOKEN:
+          # GitHub does not start workflow runs for events raised with
+          # GITHUB_TOKEN, so a tag pushed with it would never trigger
+          # release.yml. The release would be tagged with no binaries attached,
+          # and nothing would report an error.
+          #
+          # Fine-grained PAT scoped to this repository, with
+          # Contents: read & write and Pull requests: read & write,
+          # stored as the RELEASE_PLZ_TOKEN secret.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+  release-pr:
+    name: Open release PR
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so the changelog sees every commit since the last tag
+          # rather than just the tip.
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release-pr
+        uses: release-plz/action@v0
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
