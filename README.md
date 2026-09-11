@@ -66,6 +66,68 @@ Both contain the same program; they differ only in how they link the C library.
 
 If you don't want to think about it, take the static one.
 
+### Downloading and unpacking
+
+Every archive unpacks into a directory named after itself, holding the binary
+plus this README and the licence:
+
+```
+git-branch-manager-v0.2.0-linux-x86_64-static/
+├── git-branch-manager
+├── README.md
+└── LICENSE
+```
+
+**Linux and macOS.** Set `ASSET` to the row you want from the table above:
+
+```sh
+VERSION=v0.2.0
+ASSET=git-branch-manager-$VERSION-linux-x86_64-static
+
+curl -fsSLO "https://github.com/bruno-brant/rust-git-branch-manager/releases/download/$VERSION/$ASSET.tar.gz"
+tar xzf "$ASSET.tar.gz"
+
+mkdir -p ~/.local/bin
+mv "$ASSET/git-branch-manager" ~/.local/bin/
+chmod +x ~/.local/bin/git-branch-manager
+```
+
+That installs for one user; `~/.local/bin` has to be on your `PATH`. To install
+system-wide instead, use `sudo mv "$ASSET/git-branch-manager" /usr/local/bin/`.
+
+**Windows** (PowerShell):
+
+```powershell
+$Version = 'v0.2.0'
+$Asset   = "git-branch-manager-$Version-windows-x86_64"
+
+Invoke-WebRequest -Uri "https://github.com/bruno-brant/rust-git-branch-manager/releases/download/$Version/$Asset.zip" -OutFile "$Asset.zip"
+Expand-Archive -Path "$Asset.zip" -DestinationPath .
+```
+
+Then move `$Asset\git-branch-manager.exe` into a directory on your `PATH`.
+
+**macOS, one extra step.** These binaries are not code-signed or notarised. If
+you download through a browser, macOS marks the file as quarantined and refuses
+to run it ("cannot be opened because the developer cannot be verified"). Clear
+the flag:
+
+```sh
+xattr -d com.apple.quarantine ~/.local/bin/git-branch-manager
+```
+
+Downloading with `curl`, as above, does not set the quarantine flag, so this is
+only needed for browser downloads.
+
+**Check it works** by running it inside any git repository:
+
+```sh
+git-branch-manager
+```
+
+Outside a repository it exits with `Error: not inside a git repository`, which
+is also a quick way to confirm the binary runs at all.
+
 ### From source
 
 ```sh
