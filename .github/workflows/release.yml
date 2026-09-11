@@ -148,6 +148,17 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Published alongside the archives so a download can be checked against
+      # something. Generated here, after every artifact has been collected, so
+      # the sums cover exactly what gets attached to the release.
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          # Explicit patterns rather than a bare *: the sums file must never
+          # list itself, which a re-run of this step would otherwise do.
+          sha256sum *.tar.gz *.zip | tee SHA256SUMS
+
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
@@ -166,3 +177,9 @@ jobs:
 
             Take the `-static` one if the other reports
             `version 'GLIBC_x.yz' not found`.
+
+            ### Verifying a download
+
+            ```sh
+            sha256sum -c --ignore-missing SHA256SUMS   # shasum -a 256 -c on macOS
+            ```
