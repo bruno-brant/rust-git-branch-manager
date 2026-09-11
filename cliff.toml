@@ -37,10 +37,12 @@ footer = ""
 
 [git]
 conventional_commits = true
-# Keep non-conventional commits out of the changelog rather than dumping them
-# into a catch-all section; the preprocessors below are what make our commits
-# conventional in the first place.
-filter_unconventional = true
+# Deliberately false. With it on, a commit whose emoji is not in the mapping
+# below is dropped from the changelog without a trace — a typo'd or new emoji
+# silently loses the entry, which is how "🔐 Publish SHA256SUMS" once produced
+# an empty release. Unmatched commits now land in "Other", which is visible and
+# prompts adding the mapping.
+filter_unconventional = false
 protect_breaking_commits = true
 filter_commits = false
 tag_pattern = "v[0-9]*"
@@ -64,7 +66,8 @@ commit_preprocessors = [
   { pattern = '^(🐛|:bug:)\s*', replace = "fix: " },
   { pattern = '^(🚑️?|:ambulance:)\s*', replace = "fix: " },
   { pattern = '^(🩹|:adhesive_bandage:)\s*', replace = "fix: " },
-  { pattern = '^(🔒️?|:lock:)\s*', replace = "fix: " },
+  { pattern = '^(🔒️?|:lock:)\s*', replace = "security: " },
+  { pattern = '^(🔐|:closed_lock_with_key:)\s*', replace = "security: " },
   { pattern = '^(🚨|:rotating_light:)\s*', replace = "fix: " },
 
   # Performance
@@ -108,6 +111,7 @@ commit_preprocessors = [
 commit_parsers = [
   { message = "^feat", group = "✨ Features" },
   { message = "^fix", group = "🐛 Bug fixes" },
+  { message = "^security", group = "🔒 Security" },
   { message = "^perf", group = "⚡ Performance" },
   { message = "^docs", group = "📝 Documentation" },
   { message = "^refactor", group = "♻️ Refactoring" },
@@ -120,4 +124,7 @@ commit_parsers = [
   { message = "^chore\\(release\\)", skip = true },
   { message = "^Merge (branch|pull request)", skip = true },
   { message = "^chore", skip = true },
+  # Anything whose emoji is not mapped above. Its presence here is a signal to
+  # add the mapping, not a normal destination.
+  { message = ".*", group = "🗒 Other" },
 ]
