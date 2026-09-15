@@ -38,10 +38,40 @@ In the confirmation prompt: `y` to proceed, `n` / `Esc` to cancel.
 
 ## Install
 
+### Quick install
+
+**macOS and Linux:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bruno-brant/rust-git-branch-manager/main/install.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/bruno-brant/rust-git-branch-manager/main/install.ps1 | iex
+```
+
+The script picks the right build for your system, resolves the newest release,
+verifies its checksum, and installs to `~/.local/bin` (`%LOCALAPPDATA%\Programs`
+on Windows). Pass `--version v0.2.1` or `--dir PATH` to override — which means
+running the script rather than piping it:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/bruno-brant/rust-git-branch-manager/main/install.sh
+less install.sh          # both of these pipe a remote script into a shell;
+sh install.sh --dir ~/bin  # downloading it first lets you read it before it runs
+```
+
+There is no prebuilt binary for Linux on arm64 — the script says so and stops
+rather than installing an x86-64 binary that cannot run. Build from source
+instead. macOS on Apple Silicon is covered by the universal binary.
+
 ### From a release
 
-Download the asset for your platform from the [Releases](../../releases) page,
-extract it, and put the binary on your `PATH`. Assets are named by platform:
+To do it by hand, download the asset for your platform from the
+[Releases](../../releases) page, extract it, and put the binary on your `PATH`.
+Assets are named by platform:
 
 | Platform | Asset | Requires |
 | --- | --- | --- |
