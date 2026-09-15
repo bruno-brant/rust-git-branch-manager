@@ -81,10 +81,14 @@ git-branch-manager-v0.2.0-linux-x86_64-static/
 **Linux and macOS.** Set `ASSET` to the row you want from the table above:
 
 ```sh
-VERSION=v0.2.0
+REPO=https://github.com/bruno-brant/rust-git-branch-manager
+
+# Resolve the newest version. /releases/latest redirects to the tag page, so the
+# last path segment is the version — no API token and no rate limit.
+VERSION=$(basename "$(curl -fsSLo /dev/null -w '%{url_effective}' "$REPO/releases/latest")")
 ASSET=git-branch-manager-$VERSION-linux-x86_64-static
 
-curl -fsSLO "https://github.com/bruno-brant/rust-git-branch-manager/releases/download/$VERSION/$ASSET.tar.gz"
+curl -fsSLO "$REPO/releases/download/$VERSION/$ASSET.tar.gz"
 tar xzf "$ASSET.tar.gz"
 
 mkdir -p ~/.local/bin
@@ -92,16 +96,22 @@ mv "$ASSET/git-branch-manager" ~/.local/bin/
 chmod +x ~/.local/bin/git-branch-manager
 ```
 
+To pin a specific version instead, replace the `VERSION=$(…)` line with
+`VERSION=v0.2.0`. Note that `$REPO/releases/latest/download/<file>` — GitHub's
+shortcut for the newest release — is no use here: it resolves the release but
+not the filename, and these filenames contain the version.
+
 That installs for one user; `~/.local/bin` has to be on your `PATH`. To install
 system-wide instead, use `sudo mv "$ASSET/git-branch-manager" /usr/local/bin/`.
 
 **Windows** (PowerShell):
 
 ```powershell
-$Version = 'v0.2.0'
+$Repo    = 'bruno-brant/rust-git-branch-manager'
+$Version = (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest").tag_name
 $Asset   = "git-branch-manager-$Version-windows-x86_64"
 
-Invoke-WebRequest -Uri "https://github.com/bruno-brant/rust-git-branch-manager/releases/download/$Version/$Asset.zip" -OutFile "$Asset.zip"
+Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/$Version/$Asset.zip" -OutFile "$Asset.zip"
 Expand-Archive -Path "$Asset.zip" -DestinationPath .
 ```
 
