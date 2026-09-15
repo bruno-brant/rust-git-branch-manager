@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.3.0] - 2026-09-15
+
+
+### ✨ Features
+
+- Add install scripts for macOS, Linux and Windows
+
+
+### 📝 Documentation
+
+- Document downloading and unpacking the release binaries
+- Resolve the latest version in the install snippets
+
+
+
 ## [0.2.0] - 2026-09-10
 
 
