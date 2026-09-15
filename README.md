@@ -38,10 +38,40 @@ In the confirmation prompt: `y` to proceed, `n` / `Esc` to cancel.
 
 ## Install
 
+### Quick install
+
+**macOS and Linux:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bruno-brant/rust-git-branch-manager/main/install.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/bruno-brant/rust-git-branch-manager/main/install.ps1 | iex
+```
+
+The script picks the right build for your system, resolves the newest release,
+verifies its checksum, and installs to `~/.local/bin` (`%LOCALAPPDATA%\Programs`
+on Windows). Pass `--version v0.2.1` or `--dir PATH` to override — which means
+running the script rather than piping it:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/bruno-brant/rust-git-branch-manager/main/install.sh
+less install.sh          # both of these pipe a remote script into a shell;
+sh install.sh --dir ~/bin  # downloading it first lets you read it before it runs
+```
+
+There is no prebuilt binary for Linux on arm64 — the script says so and stops
+rather than installing an x86-64 binary that cannot run. Build from source
+instead. macOS on Apple Silicon is covered by the universal binary.
+
 ### From a release
 
-Download the asset for your platform from the [Releases](../../releases) page,
-extract it, and put the binary on your `PATH`. Assets are named by platform:
+To do it by hand, download the asset for your platform from the
+[Releases](../../releases) page, extract it, and put the binary on your `PATH`.
+Assets are named by platform:
 
 | Platform | Asset | Requires |
 | --- | --- | --- |
@@ -65,6 +95,78 @@ Both contain the same program; they differ only in how they link the C library.
   of age or distribution. Slightly larger, and that's the only cost.
 
 If you don't want to think about it, take the static one.
+
+### Downloading and unpacking
+
+Every archive unpacks into a directory named after itself, holding the binary
+plus this README and the licence:
+
+```
+git-branch-manager-v0.2.0-linux-x86_64-static/
+├── git-branch-manager
+├── README.md
+└── LICENSE
+```
+
+**Linux and macOS.** Set `ASSET` to the row you want from the table above:
+
+```sh
+REPO=https://github.com/bruno-brant/rust-git-branch-manager
+
+# Resolve the newest version. /releases/latest redirects to the tag page, so the
+# last path segment is the version — no API token and no rate limit.
+VERSION=$(basename "$(curl -fsSLo /dev/null -w '%{url_effective}' "$REPO/releases/latest")")
+ASSET=git-branch-manager-$VERSION-linux-x86_64-static
+
+curl -fsSLO "$REPO/releases/download/$VERSION/$ASSET.tar.gz"
+tar xzf "$ASSET.tar.gz"
+
+mkdir -p ~/.local/bin
+mv "$ASSET/git-branch-manager" ~/.local/bin/
+chmod +x ~/.local/bin/git-branch-manager
+```
+
+To pin a specific version instead, replace the `VERSION=$(…)` line with
+`VERSION=v0.2.0`. Note that `$REPO/releases/latest/download/<file>` — GitHub's
+shortcut for the newest release — is no use here: it resolves the release but
+not the filename, and these filenames contain the version.
+
+That installs for one user; `~/.local/bin` has to be on your `PATH`. To install
+system-wide instead, use `sudo mv "$ASSET/git-branch-manager" /usr/local/bin/`.
+
+**Windows** (PowerShell):
+
+```powershell
+$Repo    = 'bruno-brant/rust-git-branch-manager'
+$Version = (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest").tag_name
+$Asset   = "git-branch-manager-$Version-windows-x86_64"
+
+Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/$Version/$Asset.zip" -OutFile "$Asset.zip"
+Expand-Archive -Path "$Asset.zip" -DestinationPath .
+```
+
+Then move `$Asset\git-branch-manager.exe` into a directory on your `PATH`.
+
+**macOS, one extra step.** These binaries are not code-signed or notarised. If
+you download through a browser, macOS marks the file as quarantined and refuses
+to run it ("cannot be opened because the developer cannot be verified"). Clear
+the flag:
+
+```sh
+xattr -d com.apple.quarantine ~/.local/bin/git-branch-manager
+```
+
+Downloading with `curl`, as above, does not set the quarantine flag, so this is
+only needed for browser downloads.
+
+**Check it works** by running it inside any git repository:
+
+```sh
+git-branch-manager
+```
+
+Outside a repository it exits with `Error: not inside a git repository`, which
+is also a quick way to confirm the binary runs at all.
 
 ### From source
 
