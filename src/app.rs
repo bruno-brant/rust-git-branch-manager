@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::git::{BranchInfo, GitOperations};
 
@@ -136,8 +137,8 @@ impl<G: GitOperations> App<G> {
 
     // --- Switch flow ------------------------------------------------------
 
-    /// Triggered by `s`. Switches to the branch under the cursor — selection is
-    /// ignored, since only one branch can be checked out at a time.
+    /// Triggered by `Enter` or `s`. Switches to the branch under the cursor —
+    /// selection is ignored, since only one branch can be checked out at a time.
     ///
     /// Three cases:
     /// - it is already HEAD → nothing to do;
@@ -175,7 +176,7 @@ impl<G: GitOperations> App<G> {
 
     // --- Delete flow ------------------------------------------------------
 
-    /// Triggered by Enter. Deletes everything safe immediately; if anything needs
+    /// Triggered by `d`. Deletes everything safe immediately; if anything needs
     /// force or worktree removal, stash it in a `PendingDelete` and switch to the
     /// confirmation modal. Returns without prompting if nothing is left over.
     pub fn request_delete(&mut self) -> Result<()> {
@@ -277,6 +278,45 @@ impl<G: GitOperations> App<G> {
         self.status = parts.join(" — ");
         Ok(())
     }
+}
+
+/// Map a key press to an action. Lives here rather than in `main.rs` so the
+/// bindings themselves are covered by tests — `main.rs` keeps only the
+/// terminal and event-loop plumbing.
+pub fn handle_key<G: GitOperations>(
+    app: &mut App<G>,
+    code: KeyCode,
+    mods: KeyModifiers,
+) -> Result<()> {
+    // The page step is approximate; the renderer re-clamps the offset to keep the
+    // cursor visible regardless of exact terminal height.
+    const PAGE: usize = 10;
+
+    match &app.mode {
+        Mode::Confirm(_) => match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_delete()?,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_confirm(),
+            _ => {}
+        },
+        Mode::Browsing => match code {
+            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
+            KeyCode::Up | KeyCode::Char('k') => app.move_up(1),
+            KeyCode::Down | KeyCode::Char('j') => app.move_down(1),
+            KeyCode::PageUp => app.move_up(PAGE),
+            KeyCode::PageDown => app.move_down(PAGE),
+            KeyCode::Home => app.move_up(usize::MAX),
+            KeyCode::End => app.move_down(usize::MAX),
+            KeyCode::Char(' ') => app.toggle_selection(),
+            // Enter is the default action, and switching — not deleting — is what
+            // that should mean. `s` stays as an alias.
+            KeyCode::Enter | KeyCode::Char('s') => app.switch_branch()?,
+            KeyCode::Char('d') => app.request_delete()?,
+            KeyCode::Char('r') => app.refresh()?,
+            _ => {}
+        },
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -388,6 +428,78 @@ mod tests {
 
     fn app_with(branches: Vec<BranchInfo>) -> App<MockGit> {
         App::new(MockGit::new(branches)).unwrap()
+    }
+
+    // --- Key bindings -----------------------------------------------------
+    //
+    // These cover the mapping itself, not just the actions behind it: the point
+    // of moving delete off Enter is that Enter must not delete, and only a test
+    // at this level catches that regressing.
+
+    fn press(app: &mut App<MockGit>, code: KeyCode) {
+        handle_key(app, code, KeyModifiers::NONE).unwrap();
+    }
+
+    #[test]
+    fn enter_switches_and_never_deletes() {
+        let mut app = app_with(vec![head("main"), branch("a")]);
+        app.cursor = 1;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(*app.git.switched.borrow(), vec!["a"], "Enter switches");
+        assert!(
+            app.git.deleted.borrow().is_empty(),
+            "Enter must never delete"
+        );
+        assert_eq!(app.branches.len(), 2, "nothing removed");
+    }
+
+    #[test]
+    fn d_deletes() {
+        let mut app = app_with(vec![head("main"), branch("a")]);
+        app.cursor = 1;
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(*app.git.deleted.borrow(), vec!["a"]);
+    }
+
+    #[test]
+    fn s_still_switches() {
+        let mut app = app_with(vec![head("main"), branch("a")]);
+        app.cursor = 1;
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(*app.git.switched.borrow(), vec!["a"]);
+        assert!(app.git.deleted.borrow().is_empty());
+    }
+
+    #[test]
+    fn space_selects_and_d_deletes_the_selection() {
+        let mut app = app_with(vec![head("main"), branch("a"), branch("b")]);
+        app.cursor = 2;
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.selected[2]);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(*app.git.deleted.borrow(), vec!["b"]);
+    }
+
+    #[test]
+    fn in_the_modal_d_is_not_yes() {
+        let mut app = app_with(vec![unmerged("danger")]);
+        app.selected = vec![true];
+        press(&mut app, KeyCode::Char('d'));
+        assert!(
+            matches!(app.mode, Mode::Confirm(_)),
+            "unmerged needs confirming"
+        );
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.git.deleted.borrow().is_empty(), "d must not confirm");
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(*app.git.deleted.borrow(), vec!["danger"]);
+    }
+
+    #[test]
+    fn q_quits() {
+        let mut app = app_with(vec![branch("a")]);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
     }
 
     // --- Navigation -------------------------------------------------------
@@ -544,7 +656,7 @@ mod tests {
     // --- Delete partitioning ---------------------------------------------
 
     #[test]
-    fn enter_with_no_selection_deletes_branch_under_cursor() {
+    fn delete_with_no_selection_deletes_branch_under_cursor() {
         let mut app = app_with(vec![branch("a"), branch("b")]);
         app.cursor = 1;
         app.request_delete().unwrap();
@@ -553,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_head_with_no_selection_deletes_nothing() {
+    fn delete_on_head_with_no_selection_deletes_nothing() {
         let mut app = app_with(vec![head("main")]);
         app.cursor = 0;
         app.request_delete().unwrap();
