@@ -1,6 +1,20 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.5.0] - 2026-09-30
+
+
+### ✨ Features
+
+- Show a spinner while deleting, and stop the UI freezing
+
+
+### 📝 Documentation
+
+- Add status badges to the README
+
+
+
 ## [0.4.0] - 2026-09-30
 
 
