@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.4.0] - 2026-09-30
+
+
+### ✨ Features
+
+- Enter switches branch, d deletes
+
+
+
 ## [0.3.0] - 2026-09-15
 
 
