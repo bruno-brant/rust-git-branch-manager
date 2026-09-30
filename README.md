@@ -1,5 +1,10 @@
 # git-branch-manager
 
+[![CI](https://github.com/bruno-brant/rust-git-branch-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/bruno-brant/rust-git-branch-manager/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/bruno-brant/rust-git-branch-manager?label=release)](https://github.com/bruno-brant/rust-git-branch-manager/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/bruno-brant/rust-git-branch-manager/total?label=downloads)](https://github.com/bruno-brant/rust-git-branch-manager/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A keyboard-driven terminal UI (TUI) for browsing, switching to, and bulk-deleting
 local git branches. It understands the difference between a safe delete
 (`git branch -d`) and a force delete (`git branch -D`), asks for confirmation
