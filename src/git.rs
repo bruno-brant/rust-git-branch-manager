@@ -203,19 +203,29 @@ pub fn remove_worktree_and_branch(
         .or_else(|| Some(repo.path()))
         .ok_or_else(|| anyhow!("repository has no working directory"))?;
 
-    let status = Command::new("git")
+    // `output()` rather than `status()`: the TUI owns the terminal, so the child's
+    // stdout/stderr must be captured instead of inherited, or git's messages land
+    // on the alternate screen. Captured stderr also makes the failure explain itself.
+    let out = Command::new("git")
         .current_dir(workdir)
         .arg("worktree")
         .arg("remove")
         .arg("--force")
         .arg(worktree_path)
-        .status()
+        .output()
         .context("failed to invoke `git worktree remove`")?;
 
-    if !status.success() {
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        let why = why.trim();
         return Err(anyhow!(
-            "`git worktree remove {}` failed",
-            worktree_path.display()
+            "`git worktree remove {}` failed{}",
+            worktree_path.display(),
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {why}")
+            }
         ));
     }
 

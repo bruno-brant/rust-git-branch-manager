@@ -24,6 +24,8 @@ removing the worktree first.
   collected into a single confirmation prompt before force-deletion.
 - Branches checked out in a **worktree** are detected and marked; deleting one
   removes the worktree first, then the branch.
+- Deletion runs off the event loop behind a progress spinner: removing a large
+  worktree can take a while, and the UI keeps drawing instead of looking frozen.
 - The current branch (`HEAD`) is shown but protected from deletion.
 
 ## Keybindings

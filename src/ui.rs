@@ -10,10 +10,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, Working};
 use crate::git::GitOperations;
 
-pub fn draw<G: GitOperations>(frame: &mut Frame, app: &mut App<G>) {
+pub fn draw<G: GitOperations + Send + 'static>(frame: &mut Frame, app: &mut App<G>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -27,9 +27,56 @@ pub fn draw<G: GitOperations>(frame: &mut Frame, app: &mut App<G>) {
     draw_list(frame, chunks[1], app);
     draw_status(frame, chunks[2], app);
 
-    if let Mode::Confirm(_) = app.mode {
-        draw_confirm_modal(frame, app);
+    match &app.mode {
+        Mode::Confirm(_) => draw_confirm_modal(frame, app),
+        Mode::Working(w) => draw_working_modal(frame, w),
+        Mode::Browsing => {}
     }
+}
+
+/// Braille spinner. The event loop redraws every 80ms while a batch is running,
+/// so this turns at a readable speed without any timing logic of its own.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Shown while a delete batch runs. Removing a worktree can take a while; without
+/// this the screen would sit on the confirmation modal and look hung.
+fn draw_working_modal(frame: &mut Frame, w: &Working) {
+    let glyph = SPINNER[w.frame % SPINNER.len()];
+    let action = if w.removing_worktree {
+        "removing worktree, then deleting"
+    } else {
+        "deleting"
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{glyph} "),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("Working… ({}/{})", w.done + 1, w.total),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(format!("{action} {}", w.current)),
+    ];
+
+    let area = centered_rect(70, 22, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Deleting ")
+        .border_style(Style::default().fg(Color::Cyan));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_title<G: GitOperations>(frame: &mut Frame, area: Rect, app: &App<G>) {
@@ -40,7 +87,7 @@ fn draw_title<G: GitOperations>(frame: &mut Frame, area: Rect, app: &App<G>) {
     frame.render_widget(title, area);
 }
 
-fn draw_list<G: GitOperations>(frame: &mut Frame, area: Rect, app: &mut App<G>) {
+fn draw_list<G: GitOperations + Send + 'static>(frame: &mut Frame, area: Rect, app: &mut App<G>) {
     if app.branches.is_empty() {
         let msg = Paragraph::new("No local branches found.")
             .alignment(Alignment::Center)
@@ -118,13 +165,11 @@ fn draw_confirm_modal<G: GitOperations>(frame: &mut Frame, app: &App<G>) {
         return;
     };
 
-    let mut lines = vec![Line::from(Span::styled(
-        "Confirm deletion",
-        Style::default().add_modifier(Modifier::BOLD),
-    ))];
+    // The block's title already says "Confirm deletion"; repeating it as the first
+    // line just pushed the real content down.
+    let mut lines: Vec<Line> = Vec::new();
 
     if !pending.force.is_empty() {
-        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "These are NOT fully merged — force delete (-D):",
             Style::default().fg(Color::Yellow),
@@ -135,7 +180,9 @@ fn draw_confirm_modal<G: GitOperations>(frame: &mut Frame, app: &App<G>) {
     }
 
     if !pending.worktree.is_empty() {
-        lines.push(Line::from(""));
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
         lines.push(Line::from(Span::styled(
             "These have a worktree that will be REMOVED, then the branch deleted:",
             Style::default().fg(Color::Cyan),
@@ -161,7 +208,7 @@ fn draw_confirm_modal<G: GitOperations>(frame: &mut Frame, app: &App<G>) {
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Confirm ")
+        .title(" Confirm deletion ")
         .border_style(Style::default().fg(Color::Red));
     let para = Paragraph::new(lines)
         .block(block)

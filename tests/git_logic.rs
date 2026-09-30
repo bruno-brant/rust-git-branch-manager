@@ -277,3 +277,31 @@ fn delete_branch_removes_it() {
         .iter()
         .any(|b| b.name == "to-delete"));
 }
+
+#[test]
+fn a_failed_worktree_removal_reports_what_git_said() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+    let head = repo.head().unwrap().target().unwrap();
+    repo.branch("orphan", &repo.find_commit(head).unwrap(), false)
+        .unwrap();
+
+    // Nothing is checked out there, so `git worktree remove` fails and says why.
+    // The TUI owns the terminal, so that explanation has to come back in the error
+    // rather than being printed over the alternate screen.
+    let err = git::remove_worktree_and_branch(&repo, "orphan", Path::new("/nonexistent-worktree"))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        err.contains("is not a working tree") || err.contains("not a working tree"),
+        "the error should carry git's own stderr, got: {err}"
+    );
+    assert!(
+        git::list_branches(&repo)
+            .unwrap()
+            .iter()
+            .any(|b| b.name == "orphan"),
+        "a failed worktree removal must not delete the branch"
+    );
+}

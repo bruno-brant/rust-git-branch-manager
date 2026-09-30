@@ -2,6 +2,10 @@
 //! partitioning of a delete request into safe / force / worktree buckets.
 
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -15,6 +19,42 @@ pub enum Mode {
     /// A confirmation modal is up because some selected branches need force-delete
     /// and/or have worktrees that must be removed first.
     Confirm(PendingDelete),
+    /// A confirmed delete batch is running on a worker thread. Removing a worktree
+    /// means deleting its whole directory tree, which can take a long time, so the
+    /// work is off the event loop and the UI shows a spinner while it happens.
+    Working(Working),
+}
+
+/// One branch's worth of work handed to the worker thread.
+struct Job {
+    name: String,
+    /// `Some` when the branch is held by a worktree that has to be removed first.
+    worktree: Option<PathBuf>,
+}
+
+/// What the worker thread reports back as it goes.
+enum Progress {
+    /// Work on this branch has started. The flag is true for a worktree removal,
+    /// which is the slow case worth naming differently in the UI.
+    Started { name: String, worktree: bool },
+    /// The current branch is done; `Some` carries the failure.
+    Finished(Option<String>),
+}
+
+/// Live state of a running delete batch. The worker owns the git side; this is
+/// only what the spinner needs to draw.
+pub struct Working {
+    rx: Receiver<Progress>,
+    /// Branch currently being worked on.
+    pub current: String,
+    /// True while that branch's worktree is being removed.
+    pub removing_worktree: bool,
+    pub done: usize,
+    pub total: usize,
+    /// Advances once per redraw; picks the spinner glyph.
+    pub frame: usize,
+    deleted: usize,
+    errors: Vec<String>,
 }
 
 /// The set of branches a delete action will act on, already partitioned and
@@ -27,7 +67,8 @@ pub struct PendingDelete {
 }
 
 pub struct App<G: GitOperations> {
-    git: G,
+    /// Shared with the worker thread that runs a delete batch.
+    git: Arc<Mutex<G>>,
     pub branches: Vec<BranchInfo>,
     pub selected: Vec<bool>,
     pub cursor: usize,
@@ -43,12 +84,12 @@ pub struct App<G: GitOperations> {
     pub switch_to_worktree: Option<PathBuf>,
 }
 
-impl<G: GitOperations> App<G> {
+impl<G: GitOperations + Send + 'static> App<G> {
     pub fn new(git: G) -> Result<Self> {
         let branches = git.list_branches()?;
         let selected = vec![false; branches.len()];
         Ok(Self {
-            git,
+            git: Arc::new(Mutex::new(git)),
             branches,
             selected,
             cursor: 0,
@@ -60,9 +101,17 @@ impl<G: GitOperations> App<G> {
         })
     }
 
+    /// The git layer. A poisoned lock means a worker thread panicked mid-delete;
+    /// the data behind it is still a valid `GitOperations`, so carry on with it
+    /// rather than taking the whole UI down.
+    fn git(&self) -> MutexGuard<'_, G> {
+        self.git.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Re-read branches from disk and reset selection, keeping the cursor in range.
     pub fn refresh(&mut self) -> Result<()> {
-        self.branches = self.git.list_branches()?;
+        let branches = self.git().list_branches()?;
+        self.branches = branches;
         self.selected = vec![false; self.branches.len()];
         if self.cursor >= self.branches.len() {
             self.cursor = self.branches.len().saturating_sub(1);
@@ -164,7 +213,8 @@ impl<G: GitOperations> App<G> {
         }
 
         let name = b.name.clone();
-        match self.git.switch_branch(&name) {
+        let result = self.git().switch_branch(&name);
+        match result {
             Ok(()) => {
                 self.refresh()?;
                 self.status = format!("switched to '{name}'");
@@ -209,7 +259,8 @@ impl<G: GitOperations> App<G> {
         let mut errors = Vec::new();
         for &i in &safe {
             let name = self.branches[i].name.clone();
-            match self.git.delete_branch(&name) {
+            let result = self.git().delete_branch(&name);
+            match result {
                 Ok(()) => deleted += 1,
                 Err(e) => errors.push(format!("{name}: {e}")),
             }
@@ -238,26 +289,123 @@ impl<G: GitOperations> App<G> {
             }
         };
 
-        let mut deleted = 0;
-        let mut errors = Vec::new();
-
+        let mut jobs: Vec<Job> = Vec::new();
         for &i in &pending.force {
-            let name = self.branches[i].name.clone();
-            match self.git.delete_branch(&name) {
-                Ok(()) => deleted += 1,
-                Err(e) => errors.push(format!("{name}: {e}")),
-            }
+            jobs.push(Job {
+                name: self.branches[i].name.clone(),
+                worktree: None,
+            });
         }
         for &i in &pending.worktree {
-            let name = self.branches[i].name.clone();
-            let path = self.branches[i].worktree.clone().unwrap();
-            match self.git.remove_worktree_and_branch(&name, &path) {
-                Ok(()) => deleted += 1,
-                Err(e) => errors.push(format!("{name}: {e}")),
-            }
+            jobs.push(Job {
+                name: self.branches[i].name.clone(),
+                worktree: self.branches[i].worktree.clone(),
+            });
+        }
+        if jobs.is_empty() {
+            return self.finish_delete(0, 0, Vec::new());
         }
 
-        self.finish_delete(deleted, 0, errors)
+        let total = jobs.len();
+        let current = jobs[0].name.clone();
+        let removing_worktree = jobs[0].worktree.is_some();
+
+        // The work runs on a worker thread so the event loop keeps redrawing:
+        // `git worktree remove` deletes an entire directory tree, which on a large
+        // checkout takes long enough that a frozen screen looks like a hang.
+        let (tx, rx) = mpsc::channel();
+        let git = Arc::clone(&self.git);
+        thread::spawn(move || {
+            for job in jobs {
+                let started = Progress::Started {
+                    name: job.name.clone(),
+                    worktree: job.worktree.is_some(),
+                };
+                if tx.send(started).is_err() {
+                    return; // UI is gone; nothing left to report to
+                }
+                let result = {
+                    let git = git.lock().unwrap_or_else(|e| e.into_inner());
+                    match &job.worktree {
+                        Some(path) => git.remove_worktree_and_branch(&job.name, path),
+                        None => git.delete_branch(&job.name),
+                    }
+                };
+                let failure = result.err().map(|e| format!("{}: {e}", job.name));
+                if tx.send(Progress::Finished(failure)).is_err() {
+                    return;
+                }
+            }
+            // Dropping `tx` here is what tells the UI the batch is over.
+        });
+
+        self.mode = Mode::Working(Working {
+            rx,
+            current,
+            removing_worktree,
+            done: 0,
+            total,
+            frame: 0,
+            deleted: 0,
+            errors: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Called once per event-loop iteration. Advances the spinner, absorbs whatever
+    /// the worker has reported, and finishes the batch when the worker hangs up.
+    /// A no-op unless a delete batch is running.
+    pub fn tick(&mut self) -> Result<()> {
+        let worker_done = match &mut self.mode {
+            Mode::Working(w) => {
+                w.frame = w.frame.wrapping_add(1);
+                loop {
+                    match w.rx.try_recv() {
+                        Ok(Progress::Started { name, worktree }) => {
+                            w.current = name;
+                            w.removing_worktree = worktree;
+                        }
+                        Ok(Progress::Finished(failure)) => {
+                            w.done += 1;
+                            match failure {
+                                Some(e) => w.errors.push(e),
+                                None => w.deleted += 1,
+                            }
+                        }
+                        Err(TryRecvError::Empty) => break false,
+                        Err(TryRecvError::Disconnected) => break true,
+                    }
+                }
+            }
+            _ => return Ok(()),
+        };
+
+        if !worker_done {
+            return Ok(());
+        }
+        match std::mem::replace(&mut self.mode, Mode::Browsing) {
+            Mode::Working(w) => self.finish_delete(w.deleted, 0, w.errors),
+            _ => Ok(()),
+        }
+    }
+
+    /// How long the event loop should wait for a key before redrawing. Short while
+    /// the spinner is running so it animates; relaxed otherwise.
+    pub fn poll_interval(&self) -> Duration {
+        match self.mode {
+            Mode::Working(_) => Duration::from_millis(80),
+            _ => Duration::from_millis(200),
+        }
+    }
+
+    /// Block until a running delete batch finishes, applying its results.
+    #[cfg(test)]
+    fn wait_for_work(&mut self) -> Result<()> {
+        while matches!(self.mode, Mode::Working(_)) {
+            self.tick()?;
+            thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
     }
 
     /// User answered `n`/Esc in the modal.
@@ -283,7 +431,7 @@ impl<G: GitOperations> App<G> {
 /// Map a key press to an action. Lives here rather than in `main.rs` so the
 /// bindings themselves are covered by tests — `main.rs` keeps only the
 /// terminal and event-loop plumbing.
-pub fn handle_key<G: GitOperations>(
+pub fn handle_key<G: GitOperations + Send + 'static>(
     app: &mut App<G>,
     code: KeyCode,
     mods: KeyModifiers,
@@ -298,6 +446,16 @@ pub fn handle_key<G: GitOperations>(
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_confirm(),
             _ => {}
         },
+        // A delete batch is running. Keys are swallowed rather than queued against a
+        // branch list that is about to change under them — except Ctrl-C, which stays
+        // an escape hatch: if git wedges on a huge worktree the user is otherwise
+        // trapped. Quitting abandons the worker mid-removal, so `git worktree prune`
+        // may be needed afterwards; being unable to leave at all is worse.
+        Mode::Working(_) => {
+            if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+                app.should_quit = true;
+            }
+        }
         Mode::Browsing => match code {
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
             KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
@@ -336,6 +494,9 @@ mod tests {
         worktrees_removed: RefCell<Vec<String>>,
         switched: RefCell<Vec<String>>,
         fail_on: Vec<String>,
+        /// When set, every delete blocks until the test sends on the paired
+        /// sender — the only way to observe a batch while it is still running.
+        gate: Option<Receiver<()>>,
     }
 
     impl MockGit {
@@ -346,6 +507,20 @@ mod tests {
                 worktrees_removed: RefCell::new(Vec::new()),
                 switched: RefCell::new(Vec::new()),
                 fail_on: Vec::new(),
+                gate: None,
+            }
+        }
+
+        /// Hold every delete until the returned sender is used.
+        fn gated(&mut self) -> mpsc::Sender<()> {
+            let (tx, rx) = mpsc::channel();
+            self.gate = Some(rx);
+            tx
+        }
+
+        fn wait_at_gate(&self) {
+            if let Some(gate) = &self.gate {
+                let _ = gate.recv();
             }
         }
 
@@ -371,6 +546,7 @@ mod tests {
             Ok(self.branches.borrow().clone())
         }
         fn delete_branch(&self, name: &str) -> Result<()> {
+            self.wait_at_gate();
             if self.fail_on.iter().any(|n| n == name) {
                 return Err(anyhow!("simulated failure"));
             }
@@ -379,6 +555,7 @@ mod tests {
             Ok(())
         }
         fn remove_worktree_and_branch(&self, name: &str, _path: &Path) -> Result<()> {
+            self.wait_at_gate();
             if self.fail_on.iter().any(|n| n == name) {
                 return Err(anyhow!("simulated failure"));
             }
@@ -426,6 +603,11 @@ mod tests {
         }
     }
 
+    /// The mock behind the shared handle, for asserting on what git was asked to do.
+    fn g(app: &App<MockGit>) -> MutexGuard<'_, MockGit> {
+        app.git.lock().unwrap()
+    }
+
     fn app_with(branches: Vec<BranchInfo>) -> App<MockGit> {
         App::new(MockGit::new(branches)).unwrap()
     }
@@ -445,12 +627,128 @@ mod tests {
         let mut app = app_with(vec![head("main"), branch("a")]);
         app.cursor = 1;
         press(&mut app, KeyCode::Enter);
-        assert_eq!(*app.git.switched.borrow(), vec!["a"], "Enter switches");
+        assert_eq!(*g(&app).switched.borrow(), vec!["a"], "Enter switches");
         assert!(
-            app.git.deleted.borrow().is_empty(),
+            g(&app).deleted.borrow().is_empty(),
             "Enter must never delete"
         );
         assert_eq!(app.branches.len(), 2, "nothing removed");
+    }
+
+    // --- Working (the spinner while a batch runs) -------------------------
+    //
+    // Deleting happens on a worker thread so the UI can animate. These pin the
+    // part that is easy to get wrong: that the work still actually happens, and
+    // that the modal state in between behaves.
+
+    /// Puts `app` into a running batch that is blocked until the returned sender
+    /// is used: one unmerged branch, selected, confirmed.
+    fn start_gated_delete(app: &mut App<MockGit>) -> mpsc::Sender<()> {
+        app.selected = vec![true; app.branches.len()];
+        // The gate goes up only after `request_delete`: the merged branches it
+        // deletes inline run on this thread, and gating those would deadlock.
+        app.request_delete().unwrap();
+        let release = app.git.lock().unwrap().gated();
+        app.confirm_delete().unwrap();
+        release
+    }
+
+    #[test]
+    fn y_starts_the_work_and_the_work_completes() {
+        let mut app = app_with(vec![unmerged("danger")]);
+        let release = start_gated_delete(&mut app);
+
+        assert!(
+            matches!(app.mode, Mode::Working(_)),
+            "confirming enters the working state instead of blocking the UI"
+        );
+        release.send(()).unwrap();
+        app.wait_for_work().unwrap();
+
+        assert_eq!(*g(&app).deleted.borrow(), vec!["danger"], "y deletes");
+        assert!(
+            matches!(app.mode, Mode::Browsing),
+            "and returns to the list"
+        );
+        assert!(app.status.contains("deleted 1"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn the_spinner_advances_while_the_work_runs() {
+        let mut app = app_with(vec![unmerged("danger")]);
+        let release = start_gated_delete(&mut app);
+
+        let frame_of = |app: &App<MockGit>| match &app.mode {
+            Mode::Working(w) => w.frame,
+            _ => panic!("expected to still be working"),
+        };
+        let before = frame_of(&app);
+        app.tick().unwrap();
+        app.tick().unwrap();
+        assert!(
+            frame_of(&app) > before,
+            "the spinner has to move while git is busy — that is the whole point"
+        );
+
+        release.send(()).unwrap();
+        app.wait_for_work().unwrap();
+    }
+
+    #[test]
+    fn keys_do_nothing_while_the_work_runs() {
+        let mut app = app_with(vec![unmerged("danger"), branch("bystander")]);
+        let release = start_gated_delete(&mut app);
+
+        for key in [KeyCode::Char('d'), KeyCode::Char('q'), KeyCode::Enter] {
+            press(&mut app, key);
+            assert!(
+                matches!(app.mode, Mode::Working(_)),
+                "{key:?} left the batch"
+            );
+            assert!(!app.should_quit, "{key:?} quit mid-delete");
+        }
+
+        release.send(()).unwrap();
+        app.wait_for_work().unwrap();
+    }
+
+    #[test]
+    fn ctrl_c_is_still_an_escape_hatch_while_working() {
+        let mut app = app_with(vec![unmerged("danger")]);
+        let release = start_gated_delete(&mut app);
+
+        handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.should_quit, "Ctrl-C has to work even mid-delete");
+
+        release.send(()).unwrap();
+        app.wait_for_work().unwrap();
+    }
+
+    #[test]
+    fn the_event_loop_polls_faster_while_working() {
+        let mut app = app_with(vec![unmerged("danger")]);
+        let idle = app.poll_interval();
+        let release = start_gated_delete(&mut app);
+        assert!(
+            app.poll_interval() < idle,
+            "a spinner needs redraws more often than an idle list does"
+        );
+        release.send(()).unwrap();
+        app.wait_for_work().unwrap();
+    }
+
+    #[test]
+    fn a_failure_in_the_worker_is_reported_not_swallowed() {
+        let mut app = app_with(vec![unmerged("danger")]);
+        *app.git.lock().unwrap() = MockGit::new(vec![unmerged("danger")]).failing_on(&["danger"]);
+        app.selected = vec![true];
+        app.request_delete().unwrap();
+        app.confirm_delete().unwrap();
+        app.wait_for_work().unwrap();
+
+        assert!(app.git.lock().unwrap().deleted.borrow().is_empty());
+        assert!(app.status.contains("error"), "status: {}", app.status);
+        assert!(app.status.contains("danger"), "status: {}", app.status);
     }
 
     #[test]
@@ -458,7 +756,7 @@ mod tests {
         let mut app = app_with(vec![head("main"), branch("a")]);
         app.cursor = 1;
         press(&mut app, KeyCode::Char('d'));
-        assert_eq!(*app.git.deleted.borrow(), vec!["a"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["a"]);
     }
 
     #[test]
@@ -466,8 +764,8 @@ mod tests {
         let mut app = app_with(vec![head("main"), branch("a")]);
         app.cursor = 1;
         press(&mut app, KeyCode::Char('s'));
-        assert_eq!(*app.git.switched.borrow(), vec!["a"]);
-        assert!(app.git.deleted.borrow().is_empty());
+        assert_eq!(*g(&app).switched.borrow(), vec!["a"]);
+        assert!(g(&app).deleted.borrow().is_empty());
     }
 
     #[test]
@@ -477,7 +775,7 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         assert!(app.selected[2]);
         press(&mut app, KeyCode::Char('d'));
-        assert_eq!(*app.git.deleted.borrow(), vec!["b"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["b"]);
     }
 
     #[test]
@@ -490,9 +788,10 @@ mod tests {
             "unmerged needs confirming"
         );
         press(&mut app, KeyCode::Char('d'));
-        assert!(app.git.deleted.borrow().is_empty(), "d must not confirm");
+        assert!(g(&app).deleted.borrow().is_empty(), "d must not confirm");
         press(&mut app, KeyCode::Char('y'));
-        assert_eq!(*app.git.deleted.borrow(), vec!["danger"]);
+        app.wait_for_work().unwrap();
+        assert_eq!(*g(&app).deleted.borrow(), vec!["danger"]);
     }
 
     #[test]
@@ -591,7 +890,7 @@ mod tests {
         let mut app = app_with(vec![head("main"), branch("feature")]);
         app.cursor = 1;
         app.switch_branch().unwrap();
-        assert_eq!(*app.git.switched.borrow(), vec!["feature"]);
+        assert_eq!(*g(&app).switched.borrow(), vec!["feature"]);
         assert!(app.status.contains("switched to 'feature'"));
         // refresh ran: HEAD moved onto the branch we switched to.
         assert!(app.branches[1].is_head);
@@ -606,7 +905,7 @@ mod tests {
         app.selected = vec![false, true, false];
         app.cursor = 2;
         app.switch_branch().unwrap();
-        assert_eq!(*app.git.switched.borrow(), vec!["b"]);
+        assert_eq!(*g(&app).switched.borrow(), vec!["b"]);
     }
 
     #[test]
@@ -614,7 +913,7 @@ mod tests {
         let mut app = app_with(vec![head("main"), branch("a")]);
         app.cursor = 0;
         app.switch_branch().unwrap();
-        assert!(app.git.switched.borrow().is_empty());
+        assert!(g(&app).switched.borrow().is_empty());
         assert!(app.status.contains("already on 'main'"));
     }
 
@@ -624,7 +923,7 @@ mod tests {
         app.cursor = 1;
         app.switch_branch().unwrap();
         // No checkout attempted here — git allows one working tree per branch.
-        assert!(app.git.switched.borrow().is_empty());
+        assert!(g(&app).switched.borrow().is_empty());
         assert_eq!(app.switch_to_worktree, Some(PathBuf::from("/tmp/wt")));
         assert!(app.should_quit);
         assert!(app.status.contains("/tmp/wt"), "status: {}", app.status);
@@ -634,7 +933,7 @@ mod tests {
     fn switch_on_empty_list_is_safe() {
         let mut app = app_with(vec![]);
         app.switch_branch().unwrap();
-        assert!(app.git.switched.borrow().is_empty());
+        assert!(g(&app).switched.borrow().is_empty());
         assert!(app.status.contains("no branch"));
     }
 
@@ -644,7 +943,7 @@ mod tests {
         let mut app = App::new(git).unwrap();
         app.cursor = 1;
         app.switch_branch().unwrap();
-        assert!(app.git.switched.borrow().is_empty());
+        assert!(g(&app).switched.borrow().is_empty());
         assert!(
             app.status.contains("could not switch to 'dirty'"),
             "status: {}",
@@ -660,7 +959,7 @@ mod tests {
         let mut app = app_with(vec![branch("a"), branch("b")]);
         app.cursor = 1;
         app.request_delete().unwrap();
-        assert_eq!(*app.git.deleted.borrow(), vec!["b"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["b"]);
         assert!(matches!(app.mode, Mode::Browsing));
     }
 
@@ -669,7 +968,7 @@ mod tests {
         let mut app = app_with(vec![head("main")]);
         app.cursor = 0;
         app.request_delete().unwrap();
-        assert!(app.git.deleted.borrow().is_empty());
+        assert!(g(&app).deleted.borrow().is_empty());
         assert!(app.status.contains("nothing to delete"));
     }
 
@@ -682,7 +981,7 @@ mod tests {
             matches!(app.mode, Mode::Browsing),
             "no confirm needed for merged"
         );
-        assert_eq!(*app.git.deleted.borrow(), vec!["a", "c"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["a", "c"]);
         // refresh ran: deleted branches gone from the list.
         assert_eq!(app.branches.len(), 1);
         assert_eq!(app.branches[0].name, "b");
@@ -694,7 +993,7 @@ mod tests {
         app.selected = vec![true, true];
         app.request_delete().unwrap();
         // merged "a" already deleted; unmerged "danger" parked in confirm.
-        assert_eq!(*app.git.deleted.borrow(), vec!["a"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["a"]);
         match &app.mode {
             Mode::Confirm(p) => {
                 assert_eq!(p.force.len(), 1);
@@ -711,7 +1010,8 @@ mod tests {
         app.request_delete().unwrap();
         assert!(matches!(app.mode, Mode::Confirm(_)));
         app.confirm_delete().unwrap();
-        assert_eq!(*app.git.deleted.borrow(), vec!["danger"]);
+        app.wait_for_work().unwrap();
+        assert_eq!(*g(&app).deleted.borrow(), vec!["danger"]);
         assert!(matches!(app.mode, Mode::Browsing));
         assert!(app.branches.is_empty());
     }
@@ -722,7 +1022,7 @@ mod tests {
         app.selected = vec![true];
         app.request_delete().unwrap();
         app.cancel_confirm();
-        assert!(app.git.deleted.borrow().is_empty());
+        assert!(g(&app).deleted.borrow().is_empty());
         assert!(matches!(app.mode, Mode::Browsing));
         assert!(app.status.contains("cancelled"));
     }
@@ -740,8 +1040,9 @@ mod tests {
             _ => panic!("expected confirm for worktree branch"),
         }
         app.confirm_delete().unwrap();
-        assert_eq!(*app.git.worktrees_removed.borrow(), vec!["wt"]);
-        assert_eq!(*app.git.deleted.borrow(), vec!["wt"]);
+        app.wait_for_work().unwrap();
+        assert_eq!(*g(&app).worktrees_removed.borrow(), vec!["wt"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["wt"]);
     }
 
     #[test]
@@ -756,7 +1057,7 @@ mod tests {
         app.selected = vec![true, true, true, true];
         app.request_delete().unwrap();
         // safe one deleted now
-        assert_eq!(*app.git.deleted.borrow(), vec!["merged"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["merged"]);
         match &app.mode {
             Mode::Confirm(p) => {
                 assert_eq!(p.force.len(), 1);
@@ -773,7 +1074,7 @@ mod tests {
         app.selected = vec![true, true];
         app.request_delete().unwrap();
         // "a" deleted, "b" failed.
-        assert_eq!(*app.git.deleted.borrow(), vec!["a"]);
+        assert_eq!(*g(&app).deleted.borrow(), vec!["a"]);
         assert!(app.status.contains("error"), "status: {}", app.status);
     }
 
@@ -783,7 +1084,7 @@ mod tests {
         app.cursor = 2;
         app.selected = vec![true, true, true];
         // shrink the underlying repo to a single branch, then refresh.
-        *app.git.branches.borrow_mut() = vec![branch("only")];
+        *g(&app).branches.borrow_mut() = vec![branch("only")];
         app.refresh().unwrap();
         assert_eq!(app.branches.len(), 1);
         assert_eq!(app.cursor, 0);

@@ -1,5 +1,4 @@
 use std::io;
-use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::{
@@ -52,14 +51,17 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -> Re
     Ok(())
 }
 
-fn run<G: GitOperations>(
+fn run<G: GitOperations + Send + 'static>(
     terminal: &mut Terminal<CrosstermBackend<io::Stderr>>,
     app: &mut App<G>,
 ) -> Result<()> {
     loop {
+        // Picks up worker-thread progress and advances the spinner; a no-op when
+        // nothing is running.
+        app.tick()?;
         terminal.draw(|f| ui::draw(f, app))?;
 
-        if !event::poll(Duration::from_millis(200))? {
+        if !event::poll(app.poll_interval())? {
             continue;
         }
         if let Event::Key(key) = event::read()? {
