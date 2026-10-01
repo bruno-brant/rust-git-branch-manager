@@ -11,6 +11,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::git::{BranchInfo, GitOperations};
+use crate::update;
 
 /// What the UI is currently showing / waiting on.
 pub enum Mode {
@@ -23,6 +24,36 @@ pub enum Mode {
     /// means deleting its whole directory tree, which can take a long time, so the
     /// work is off the event loop and the UI shows a spinner while it happens.
     Working(Working),
+    /// Asking whether to install the release named here.
+    ConfirmUpdate(String),
+    /// That update is downloading and installing, also on a worker thread.
+    Updating(Updating),
+}
+
+/// Live state of a running self-update.
+pub struct Updating {
+    rx: Receiver<UpdateStep>,
+    /// The release being installed.
+    pub version: String,
+    /// What it is doing right now — downloading, verifying, installing.
+    pub step: String,
+    pub frame: usize,
+}
+
+/// Progress from the updater thread.
+enum UpdateStep {
+    Step(String),
+    Done(std::result::Result<(), String>),
+}
+
+/// What the background version check found. The UI only nags once it is
+/// `Available`, and never says anything when the network is unreachable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateState {
+    /// Not checked yet, check failed, or already current — nothing to show.
+    Idle,
+    /// A newer release exists.
+    Available(String),
 }
 
 /// One branch's worth of work handed to the worker thread.
@@ -82,6 +113,10 @@ pub struct App<G: GitOperations> {
     /// cannot change its parent shell's directory, so we hand the path back to the
     /// caller (see `main.rs`) to print on exit for a `cd "$(git-branch-manager)"` wrapper.
     pub switch_to_worktree: Option<PathBuf>,
+    /// Set when the background check finds a newer release.
+    pub update: UpdateState,
+    /// Carries that check's answer back from its thread.
+    update_check: Option<Receiver<String>>,
 }
 
 impl<G: GitOperations + Send + 'static> App<G> {
@@ -98,6 +133,8 @@ impl<G: GitOperations + Send + 'static> App<G> {
             status: String::new(),
             should_quit: false,
             switch_to_worktree: None,
+            update: UpdateState::Idle,
+            update_check: None,
         })
     }
 
@@ -352,10 +389,117 @@ impl<G: GitOperations + Send + 'static> App<G> {
         Ok(())
     }
 
+    /// Kick off the version check on a background thread. The UI never waits on
+    /// it: a slow or unreachable network must not delay the branch list, and a
+    /// failed check simply never reports anything.
+    pub fn start_update_check(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            if let Ok(update::Status::Available(v)) = update::check() {
+                let _ = tx.send(v);
+            }
+        });
+        self.update_check = Some(rx);
+    }
+
+    /// Ask before installing. Nothing is downloaded until the user says yes.
+    pub fn request_update(&mut self) {
+        match &self.update {
+            UpdateState::Available(v) => self.mode = Mode::ConfirmUpdate(v.clone()),
+            UpdateState::Idle => {
+                self.status = format!("no update available (v{})", update::CURRENT)
+            }
+        }
+    }
+
+    /// The user answered `y` to the update prompt.
+    pub fn confirm_update(&mut self) {
+        let version = match std::mem::replace(&mut self.mode, Mode::Browsing) {
+            Mode::ConfirmUpdate(v) => v,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let (tx, rx) = mpsc::channel();
+        let target = version.clone();
+        thread::spawn(move || {
+            let report = tx.clone();
+            let progress = move |step: &str| {
+                let _ = report.send(UpdateStep::Step(step.to_string()));
+            };
+            let outcome = update::install(&target, &progress).map_err(|e| e.to_string());
+            let _ = tx.send(UpdateStep::Done(outcome));
+        });
+
+        self.mode = Mode::Updating(Updating {
+            rx,
+            version,
+            step: "starting".into(),
+            frame: 0,
+        });
+    }
+
+    /// The user declined the update prompt.
+    pub fn cancel_update(&mut self) {
+        self.mode = Mode::Browsing;
+        self.status = "update skipped".into();
+    }
+
+    /// Absorb whatever the update check and the updater thread have reported.
+    fn poll_update(&mut self) {
+        if let Some(rx) = &self.update_check {
+            match rx.try_recv() {
+                Ok(version) => {
+                    self.update = UpdateState::Available(version);
+                    self.update_check = None;
+                }
+                Err(TryRecvError::Disconnected) => self.update_check = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        let finished = match &mut self.mode {
+            Mode::Updating(u) => {
+                u.frame = u.frame.wrapping_add(1);
+                loop {
+                    match u.rx.try_recv() {
+                        Ok(UpdateStep::Step(step)) => u.step = step,
+                        Ok(UpdateStep::Done(outcome)) => break Some(outcome),
+                        Err(TryRecvError::Empty) => break None,
+                        // The thread died without reporting; treat it as a failure
+                        // rather than leaving a spinner up forever.
+                        Err(TryRecvError::Disconnected) => {
+                            break Some(Err("the updater stopped unexpectedly".into()))
+                        }
+                    }
+                }
+            }
+            _ => return,
+        };
+
+        let Some(outcome) = finished else { return };
+        let version = match std::mem::replace(&mut self.mode, Mode::Browsing) {
+            Mode::Updating(u) => u.version,
+            _ => return,
+        };
+        self.status = match outcome {
+            // The running process keeps the old image until it exits, so say so
+            // rather than letting someone wonder why nothing changed.
+            Ok(()) => {
+                self.update = UpdateState::Idle;
+                format!("updated to {version} — restart to use it")
+            }
+            Err(e) => format!("update failed: {e}"),
+        };
+    }
+
     /// Called once per event-loop iteration. Advances the spinner, absorbs whatever
     /// the worker has reported, and finishes the batch when the worker hangs up.
     /// A no-op unless a delete batch is running.
     pub fn tick(&mut self) -> Result<()> {
+        self.poll_update();
         let worker_done = match &mut self.mode {
             Mode::Working(w) => {
                 w.frame = w.frame.wrapping_add(1);
@@ -393,7 +537,7 @@ impl<G: GitOperations + Send + 'static> App<G> {
     /// the spinner is running so it animates; relaxed otherwise.
     pub fn poll_interval(&self) -> Duration {
         match self.mode {
-            Mode::Working(_) => Duration::from_millis(80),
+            Mode::Working(_) | Mode::Updating(_) => Duration::from_millis(80),
             _ => Duration::from_millis(200),
         }
     }
@@ -446,6 +590,17 @@ pub fn handle_key<G: GitOperations + Send + 'static>(
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_confirm(),
             _ => {}
         },
+        Mode::ConfirmUpdate(_) => match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_update(),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_update(),
+            _ => {}
+        },
+        // Downloading and swapping the binary: same rule as a delete batch.
+        Mode::Updating(_) => {
+            if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+                app.should_quit = true;
+            }
+        }
         // A delete batch is running. Keys are swallowed rather than queued against a
         // branch list that is about to change under them — except Ctrl-C, which stays
         // an escape hatch: if git wedges on a huge worktree the user is otherwise
@@ -471,6 +626,7 @@ pub fn handle_key<G: GitOperations + Send + 'static>(
             KeyCode::Enter | KeyCode::Char('s') => app.switch_branch()?,
             KeyCode::Char('d') => app.request_delete()?,
             KeyCode::Char('r') => app.refresh()?,
+            KeyCode::Char('u') => app.request_update(),
             _ => {}
         },
     }
@@ -749,6 +905,127 @@ mod tests {
         assert!(app.git.lock().unwrap().deleted.borrow().is_empty());
         assert!(app.status.contains("error"), "status: {}", app.status);
         assert!(app.status.contains("danger"), "status: {}", app.status);
+    }
+
+    // --- Update check, prompt, and install --------------------------------
+
+    /// Point the updater at a path that cannot exist, so a confirmed update
+    /// fails locally and instantly instead of reaching GitHub.
+    fn offline_update_source() -> std::sync::MutexGuard<'static, ()> {
+        let guard = crate::update::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("GBM_BASE_URL", "file:///nonexistent-gbm-release");
+        guard
+    }
+
+    fn wait_for_update(app: &mut App<MockGit>) {
+        for _ in 0..5_000 {
+            app.tick().unwrap();
+            if !matches!(app.mode, Mode::Updating(_)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the updater never finished");
+    }
+
+    #[test]
+    fn u_with_nothing_available_says_so_rather_than_prompting() {
+        let mut app = app_with(vec![head("main")]);
+        press(&mut app, KeyCode::Char('u'));
+        assert!(
+            matches!(app.mode, Mode::Browsing),
+            "no prompt without a release"
+        );
+        assert!(app.status.contains("no update"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn an_available_release_is_offered_and_can_be_declined() {
+        let mut app = app_with(vec![head("main")]);
+        app.update = UpdateState::Available("v9.9.9".into());
+
+        press(&mut app, KeyCode::Char('u'));
+        match &app.mode {
+            Mode::ConfirmUpdate(v) => assert_eq!(v, "v9.9.9"),
+            _ => panic!("u should ask before downloading anything"),
+        }
+
+        press(&mut app, KeyCode::Char('n'));
+        assert!(matches!(app.mode, Mode::Browsing));
+        assert!(app.status.contains("skipped"), "status: {}", app.status);
+        assert_eq!(
+            app.update,
+            UpdateState::Available("v9.9.9".into()),
+            "declining keeps the offer; it is not the same as being up to date"
+        );
+    }
+
+    #[test]
+    fn y_installs_and_a_failure_is_reported_not_swallowed() {
+        let _env = offline_update_source();
+        let mut app = app_with(vec![head("main")]);
+        app.update = UpdateState::Available("v9.9.9".into());
+
+        press(&mut app, KeyCode::Char('u'));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(
+            matches!(app.mode, Mode::Updating(_)),
+            "y starts the install behind a spinner"
+        );
+
+        wait_for_update(&mut app);
+        assert!(
+            app.status.contains("update failed"),
+            "a download that cannot succeed has to say so, got: {}",
+            app.status
+        );
+        std::env::remove_var("GBM_BASE_URL");
+    }
+
+    #[test]
+    fn keys_do_nothing_mid_update_except_ctrl_c() {
+        let _env = offline_update_source();
+        let mut app = app_with(vec![head("main"), branch("a")]);
+        app.update = UpdateState::Available("v9.9.9".into());
+        press(&mut app, KeyCode::Char('u'));
+        press(&mut app, KeyCode::Char('y'));
+
+        press(&mut app, KeyCode::Char('d'));
+        assert!(
+            g(&app).deleted.borrow().is_empty(),
+            "d must not delete mid-update"
+        );
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.should_quit, "q must not quit mid-update");
+
+        handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.should_quit, "Ctrl-C stays the escape hatch");
+
+        wait_for_update(&mut app);
+        std::env::remove_var("GBM_BASE_URL");
+    }
+
+    #[test]
+    fn the_update_check_never_blocks_startup() {
+        // The check runs on its own thread; `start_update_check` has to return
+        // immediately whatever the network is doing.
+        let _env = offline_update_source();
+        let mut app = app_with(vec![head("main")]);
+        let before = std::time::Instant::now();
+        app.start_update_check();
+        assert!(
+            before.elapsed() < Duration::from_millis(50),
+            "starting the check took {:?}",
+            before.elapsed()
+        );
+        assert_eq!(
+            app.update,
+            UpdateState::Idle,
+            "nothing is claimed until it answers"
+        );
+        std::env::remove_var("GBM_BASE_URL");
     }
 
     #[test]
