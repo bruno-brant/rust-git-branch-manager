@@ -16,6 +16,10 @@ fn main() -> Result<()> {
     let repo = git::open_repo()?;
     let mut app = App::new(git::RealGit::new(repo))?;
 
+    // A previous update on Windows may have left the old image beside the new one.
+    git_branch_manager::update::clean_after_update();
+    app.start_update_check();
+
     let mut terminal = setup_terminal()?;
     let result = run(&mut terminal, &mut app);
     restore_terminal(&mut terminal)?;

@@ -27,6 +27,8 @@ removing the worktree first.
 - Deletion runs off the event loop behind a progress spinner: removing a large
   worktree can take a while, and the UI keeps drawing instead of looking frozen.
 - The current branch (`HEAD`) is shown but protected from deletion.
+- Notices when a newer release exists and can install it in place, after asking
+  (see [Staying up to date](#staying-up-to-date)).
 
 ## Keybindings
 
@@ -39,6 +41,7 @@ removing the worktree first.
 | `Enter` / `s` | Switch to the branch under the cursor |
 | `d` | Delete selected (or the branch under the cursor) |
 | `r` | Refresh the branch list |
+| `u` | Update to a newer release, when one is available |
 | `q` / `Esc` | Quit |
 
 In the confirmation prompt: `y` to proceed, `n` / `Esc` to cancel.
@@ -218,6 +221,47 @@ gbm() {
 The UI itself is drawn on stderr, and stdout stays empty in every other case, so
 the wrapper still shows the TUI normally and stays put unless a worktree was
 picked.
+
+## Staying up to date
+
+On startup the tool asks GitHub for the newest released tag, in the background —
+a slow or unreachable network never delays the branch list, and a failed check
+says nothing at all. The answer is cached for 24 hours, so running the tool
+twenty times an hour means one round trip.
+
+When a newer release exists the title bar says so, and `u` offers it:
+
+```
+ v0.6.0 is available — you have v0.5.0
+
+ Downloads from GitHub, checks it against the
+ published SHA256SUMS, then replaces this binary.
+
+ Update now?  [y] yes   [n/Esc] no
+```
+
+Nothing is downloaded until you answer `y`. The update then fetches the asset
+for your platform, verifies it against the release's `SHA256SUMS`, and replaces
+the running binary in place. The running process keeps the old version until it
+exits, so restart to pick up the new one.
+
+The check uses `git ls-remote`, not an HTTP client — git is already a
+requirement, so this adds no dependency, no second TLS stack, and your existing
+proxy and credential configuration is honoured.
+
+| Situation | What happens |
+| --- | --- |
+| Installed with `cargo install` | Refused, pointing at `cargo install --git …` rather than fighting cargo |
+| Installed somewhere unwritable (`/usr/local/bin`) | Refused with the reason; re-run `install.sh`, or use `sudo` |
+| Linux on arm64, or any platform without a published asset | Refused, pointing at building from source |
+| Checksum does not match | Refused, and the installed binary is left untouched |
+
+Set `GBM_NO_UPDATE_CHECK=1` to switch the check off entirely. `GBM_BASE_URL`
+overrides where releases are fetched from, which is what the tests point at a
+local fake release.
+
+The check and the update both write to the TUI only. Nothing about them touches
+stdout, so `cd "$(git-branch-manager)"` keeps working.
 
 ## Development
 

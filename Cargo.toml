@@ -15,3 +15,6 @@ ratatui = "0.29"
 crossterm = "0.28"
 git2 = { version = "0.20", default-features = false }
 anyhow = "1"
+# Pure-Rust SHA-256 for verifying a downloaded update against SHA256SUMS.
+# No C, so the static musl build stays a single self-contained binary.
+sha2 = "0.10"
