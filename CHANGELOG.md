@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.6.0] - 2026-10-01
+
+
+### ✨ Features
+
+- Notice newer releases, and install them on request
+
+
+
 ## [0.5.0] - 2026-09-30
 
 
