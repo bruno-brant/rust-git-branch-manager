@@ -29,6 +29,11 @@ fn main() -> Result<()> {
     // directory, which a child process can't do for its parent shell. Print the
     // path on stdout — the only thing this program ever writes there — so a
     // wrapper can act on it:  cd "$(git-branch-manager)"
+    // stderr, like everything else the UI says: stdout is reserved below.
+    if let Some(name) = &app.switched_to {
+        eprintln!("switched to {name}");
+    }
+
     if let Some(path) = app.switch_to_worktree {
         eprintln!(
             "branch is checked out in a worktree; cd there with: cd \"$(git-branch-manager)\""

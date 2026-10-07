@@ -113,6 +113,9 @@ pub struct App<G: GitOperations> {
     /// cannot change its parent shell's directory, so we hand the path back to the
     /// caller (see `main.rs`) to print on exit for a `cd "$(git-branch-manager)"` wrapper.
     pub switch_to_worktree: Option<PathBuf>,
+    /// Set when a checkout succeeded and the tool is exiting because of it, so
+    /// the caller can say which branch you landed on.
+    pub switched_to: Option<String>,
     /// Set when the background check finds a newer release.
     pub update: UpdateState,
     /// Carries that check's answer back from its thread.
@@ -133,6 +136,7 @@ impl<G: GitOperations + Send + 'static> App<G> {
             status: String::new(),
             should_quit: false,
             switch_to_worktree: None,
+            switched_to: None,
             update: UpdateState::Idle,
             update_check: None,
         })
@@ -226,11 +230,15 @@ impl<G: GitOperations + Send + 'static> App<G> {
     /// Triggered by `Enter` or `s`. Switches to the branch under the cursor —
     /// selection is ignored, since only one branch can be checked out at a time.
     ///
+    /// Switching is the end of a session: once it succeeds the tool exits, leaving
+    /// the shell on the branch that was asked for. A switch that does not happen
+    /// stays put instead, so the reason is still on screen.
+    ///
     /// Three cases:
-    /// - it is already HEAD → nothing to do;
+    /// - it is already HEAD → nothing to do, and nothing to leave for;
     /// - it is checked out in a linked worktree → git forbids a second checkout, so
     ///   we record the worktree path and quit, letting the shell wrapper `cd` there;
-    /// - otherwise → check it out here, then refresh so HEAD and merged-status are current.
+    /// - otherwise → check it out here and quit.
     pub fn switch_branch(&mut self) -> Result<()> {
         let Some(b) = self.branches.get(self.cursor) else {
             self.status = "no branch to switch to".into();
@@ -253,9 +261,13 @@ impl<G: GitOperations + Send + 'static> App<G> {
         let result = self.git().switch_branch(&name);
         match result {
             Ok(()) => {
-                self.refresh()?;
                 self.status = format!("switched to '{name}'");
+                self.switched_to = Some(name);
+                self.should_quit = true;
             }
+            // A refused checkout — uncommitted work in the way, most often — is
+            // the one case where staying matters: quitting would wipe the
+            // explanation off the screen along with the alternate screen.
             Err(e) => self.status = format!("could not switch to '{name}': {e}"),
         }
         Ok(())
@@ -1169,11 +1181,47 @@ mod tests {
         app.switch_branch().unwrap();
         assert_eq!(*g(&app).switched.borrow(), vec!["feature"]);
         assert!(app.status.contains("switched to 'feature'"));
-        // refresh ran: HEAD moved onto the branch we switched to.
-        assert!(app.branches[1].is_head);
-        assert!(!app.branches[0].is_head);
         assert!(app.switch_to_worktree.is_none());
-        assert!(!app.should_quit);
+        // Switching is the end of a session: the checkout is done, so leave.
+        assert!(app.should_quit, "a successful switch exits");
+        assert_eq!(app.switched_to.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn a_refused_switch_keeps_the_app_open_with_the_reason() {
+        let git = MockGit::new(vec![head("main"), branch("dirty")]).failing_on(&["dirty"]);
+        let mut app = App::new(git).unwrap();
+        app.cursor = 1;
+        app.switch_branch().unwrap();
+        assert!(
+            !app.should_quit,
+            "quitting would take the explanation off the screen with it"
+        );
+        assert_eq!(app.switched_to, None);
+        assert!(app.status.contains("could not switch"), "{}", app.status);
+    }
+
+    #[test]
+    fn switching_to_the_branch_already_checked_out_is_not_a_reason_to_leave() {
+        let mut app = app_with(vec![head("main"), branch("other")]);
+        app.cursor = 0;
+        app.switch_branch().unwrap();
+        assert!(
+            !app.should_quit,
+            "nothing happened, so there is nothing to exit for"
+        );
+        assert_eq!(app.switched_to, None);
+        assert!(app.status.contains("already on"), "{}", app.status);
+    }
+
+    #[test]
+    fn enter_switches_and_exits() {
+        let mut app = app_with(vec![head("main"), branch("a")]);
+        app.cursor = 1;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(*g(&app).switched.borrow(), vec!["a"]);
+        assert!(app.should_quit, "Enter is switch-and-go");
+        assert_eq!(app.switched_to.as_deref(), Some("a"));
     }
 
     #[test]
