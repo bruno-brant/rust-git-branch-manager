@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [1.0.0] - 2026-10-15
+
+
+### ✨ Features
+
+- Exit after switching branches
+
+
+
 ## [0.6.0] - 2026-10-01
 
 
