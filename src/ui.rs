@@ -164,7 +164,7 @@ fn draw_status<G: GitOperations>(frame: &mut Frame, area: Rect, app: &App<G>) {
     frame.render_widget(status, rows[0]);
 
     let help = Paragraph::new(
-        "↑/↓ move  PgUp/PgDn page  Space select  Enter switch  d delete  r refresh  u update  q quit",
+        "↑/↓ move  PgUp/PgDn page  Space select  Enter switch & exit  d delete  r refresh  u update  q quit",
     )
     .style(Style::default().add_modifier(Modifier::DIM));
     frame.render_widget(help, rows[1]);

@@ -38,7 +38,7 @@ removing the worktree first.
 | `PgUp` / `PgDn` | Page up / down |
 | `Home` / `End` | Jump to first / last branch |
 | `Space` | Toggle selection |
-| `Enter` / `s` | Switch to the branch under the cursor |
+| `Enter` / `s` | Switch to the branch under the cursor, then exit |
 | `d` | Delete selected (or the branch under the cursor) |
 | `r` | Refresh the branch list |
 | `u` | Update to a newer release, when one is available |
@@ -203,7 +203,10 @@ git-branch-manager
 ### Switching branches
 
 `Enter` (or `s`) checks out the branch under the cursor in the current working
-tree.
+tree and exits — switching is the end of a session, and leaving you in a branch
+list you no longer need is just another key to press. The branch you landed on
+is printed on stderr. A checkout that is *refused* — uncommitted work in the way
+— keeps the tool open instead, so the reason stays on screen.
 
 Git allows a branch to be checked out in only one working tree, so if the branch
 is already held by a linked worktree, switching to it means going *there*
