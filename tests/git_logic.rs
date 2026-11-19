@@ -305,3 +305,92 @@ fn a_failed_worktree_removal_reports_what_git_said() {
         "a failed worktree removal must not delete the branch"
     );
 }
+
+/// Merged status comes from one walk of HEAD's history rather than a question
+/// per branch. These pin the cases that rewrite could plausibly get wrong.
+#[test]
+fn a_branch_merged_through_a_merge_commits_second_parent_counts_as_merged() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+    let base = repo.head().unwrap().target().unwrap();
+
+    // side: one commit off the trunk, then merged into main.
+    repo.branch("side", &repo.find_commit(base).unwrap(), false)
+        .unwrap();
+    repo.set_head("refs/heads/side").unwrap();
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .unwrap();
+    write_file(&tmp.path, "side.txt", "work");
+    let side_tip = commit_all(&repo, "side work");
+
+    repo.set_head("refs/heads/main").unwrap();
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .unwrap();
+    write_file(&tmp.path, "main.txt", "trunk");
+    let main_tip = commit_all(&repo, "trunk work");
+
+    // A real merge commit: main's tip plus side's tip as second parent.
+    let sig = Signature::now("test", "test@example.com").unwrap();
+    let tree = repo.find_commit(main_tip).unwrap().tree().unwrap();
+    repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        "merge side",
+        &tree,
+        &[
+            &repo.find_commit(main_tip).unwrap(),
+            &repo.find_commit(side_tip).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let side = git::list_branches(&repo)
+        .unwrap()
+        .into_iter()
+        .find(|b| b.name == "side")
+        .expect("side branch is listed");
+    assert!(
+        side.is_merged,
+        "reachable through the merge's second parent, so deleting it loses nothing"
+    );
+}
+
+#[test]
+fn a_branch_sitting_exactly_on_head_is_merged() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+    let head = repo.head().unwrap().target().unwrap();
+    repo.branch("same-spot", &repo.find_commit(head).unwrap(), false)
+        .unwrap();
+
+    let b = git::list_branches(&repo)
+        .unwrap()
+        .into_iter()
+        .find(|b| b.name == "same-spot")
+        .unwrap();
+    assert!(b.is_merged, "nothing on it that HEAD does not already have");
+    assert!(
+        !b.is_head,
+        "it is not the checked-out branch, just the same commit"
+    );
+}
+
+#[test]
+fn with_a_detached_head_no_branch_claims_to_be_head() {
+    let tmp = TempDir::new();
+    let repo = init_repo(&tmp.path);
+    let head = repo.head().unwrap().target().unwrap();
+    repo.set_head_detached(head).unwrap();
+
+    let branches = git::list_branches(&repo).unwrap();
+    assert!(!branches.is_empty(), "branches are still listed");
+    assert!(
+        branches.iter().all(|b| !b.is_head),
+        "HEAD is not on a branch, so none of them is it"
+    );
+    assert!(
+        branches.iter().any(|b| b.is_merged),
+        "reachability still works from a detached HEAD"
+    );
+}
