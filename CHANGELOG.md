@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to this project are documented here.
-## [1.0.0] - 2026-11-23
+## [0.7.0] - 2026-11-23
 
 
 ### ⚡ Performance
