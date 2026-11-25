@@ -3,6 +3,7 @@
 //! and shared — no duplicate compilation, no spurious dead-code warnings.
 
 pub mod app;
+pub mod cli;
 pub mod git;
 pub mod ui;
 pub mod update;

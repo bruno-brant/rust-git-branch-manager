@@ -176,7 +176,12 @@ git-branch-manager
 ```
 
 Outside a repository it exits with `Error: not inside a git repository`, which
-is also a quick way to confirm the binary runs at all.
+is also a quick way to confirm the binary runs at all. `-v` works anywhere:
+
+```sh
+git-branch-manager -v
+# git-branch-manager 0.7.0
+```
 
 ### From source
 
@@ -199,6 +204,9 @@ Run it from inside any git repository:
 ```sh
 git-branch-manager
 ```
+
+`-v` (or `--version`) prints the version and exits; it is the only argument the
+tool takes, and anything else is ignored.
 
 ### Switching branches
 
