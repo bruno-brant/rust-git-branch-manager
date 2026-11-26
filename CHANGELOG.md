@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [0.8.0] - 2026-11-26
+
+
+### ✨ Features
+
+- Add -v to print the version
+
+
+
 ## [0.7.0] - 2026-11-23
 
 
