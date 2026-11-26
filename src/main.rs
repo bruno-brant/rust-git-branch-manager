@@ -9,10 +9,18 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use git_branch_manager::app::{self, App};
+use git_branch_manager::cli::{self, Action};
 use git_branch_manager::git::{self, GitOperations};
 use git_branch_manager::ui;
 
 fn main() -> Result<()> {
+    // Answered before the repository is opened, so `-v` works anywhere rather
+    // than failing with "not inside a git repository".
+    if cli::parse(std::env::args().skip(1)) == Action::ShowVersion {
+        println!("{}", cli::version_line());
+        return Ok(());
+    }
+
     let repo = git::open_repo()?;
     let mut app = App::new(git::RealGit::new(repo))?;
 
