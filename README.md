@@ -322,14 +322,26 @@ Releases are cut by merging a pull request, not by tagging by hand:
 The version is derived from the raw commit subjects, so it is worth knowing what
 each emoji does. Measured behaviour:
 
-| Commit | While `0.x` | From `1.0` on |
-| --- | --- | --- |
-| `💥` | `0.1.1` → `0.2.0` | `1.0.0` → `2.0.0` |
-| `✨` | `0.1.1` → `0.2.0` | `1.0.0` → `1.1.0` |
-| anything else | `0.1.1` → `0.1.2` | `1.0.0` → `1.0.1` |
+| Commit | Effect |
+| --- | --- |
+| `💥` | minor: `0.8.0` → `0.9.0` |
+| `✨` | minor: `0.8.0` → `0.9.0` |
+| anything else | patch: `0.8.0` → `0.8.1` |
 
-Below `1.0`, release-plz will not promote the crate to `1.0.0` on its own — that
-stays a deliberate decision, made by editing the version in the release PR.
+**Nothing can bump the major version.** That is on purpose: `1.0.0` says the
+keybindings and the stdout contract have settled, which is a decision to make
+deliberately rather than one a commit subject should trigger. While the project
+is `0.x`, `💥` moves the minor version — the semver-0.x meaning of a breaking
+change.
+
+Going to `1.0` therefore takes two edits: set the version in the release PR by
+hand, and add `custom_major_increment_regex = "💥|:boom:"` back to
+[`release-plz.toml`](release-plz.toml), so that from then on `💥` means
+`1.0.0` → `2.0.0`. Without it, `💥` keeps meaning a minor bump above 1.0 too.
+
+(An earlier version of this table claimed release-plz refuses to promote a `0.x`
+crate to `1.0.0` by itself. It does not: that is what the configuration above is
+for, and v0.7.0 had to be corrected by hand because of it.)
 
 #### Testing the build without releasing
 

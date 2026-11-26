@@ -43,15 +43,32 @@ changelog_update = true
 # without these regexes a "💥 …" commit bumps the patch version, which would
 # release a breaking change as a patch, silently.
 #
-# 💥 appears in both regexes on purpose, and it is not redundant:
-#   - Below 1.0, release-plz suppresses major bumps entirely (0.x -> 1.0 is a
-#     human decision, not something a commit message should trigger), so only
-#     the minor entry fires: 0.1.1 -> 0.2.0, which is the semver-0.x meaning of
-#     a breaking change.
-#   - At 1.0 and above, the major entry takes precedence: 1.0.0 -> 2.0.0.
-# So this needs no edit when the project reaches 1.0.
+# There is deliberately no `custom_major_increment_regex`.
 #
-# ✨ is the only other emoji that moves the minor version. Everything else —
-# fixes, docs, deps, CI, refactors — is a patch.
-custom_major_increment_regex = "💥|:boom:"
+# There used to be one, with a comment here claiming release-plz suppresses
+# major bumps below 1.0 so that 💥 would only move the minor version. That was
+# wrong, and v0.7.0 is where it showed: a 💥 commit on 0.6.0 proposed 1.0.0, and
+# the version had to be edited back down by hand before release. Measured again
+# with release-plz 0.4.3, starting from 0.8.0:
+#
+#     with a major regex      💥 -> 1.0.0     ✨ -> 0.9.0     🐛 -> 0.8.1
+#     without one (today)     💥 -> 0.9.0     ✨ -> 0.9.0     🐛 -> 0.8.1
+#
+# 1.0.0 is a promise that the keybindings and the stdout contract have settled.
+# That is a decision to make deliberately, not something a commit subject should
+# be able to trigger, so nothing here can reach it: with no major regex, not even
+# a raw `feat!:` subject bumps the major (measured: it gives 0.9.0 too).
+#
+# While this project is 0.x, 💥 moves the minor version, which is what a
+# breaking change means under semver below 1.0.
+#
+# WHEN YOU DECIDE TO GO 1.0: set the version in the release PR by hand, and add
+#
+#     custom_major_increment_regex = "💥|:boom:"
+#
+# back, or 💥 will keep meaning a minor bump — measured from 1.2.3, it gives
+# 1.3.0, when a breaking change above 1.0 should give 2.0.0.
+#
+# ✨ is the other emoji that moves the minor version. Everything else — fixes,
+# docs, deps, CI, refactors — is a patch.
 custom_minor_increment_regex = "💥|:boom:|✨|:sparkles:"
